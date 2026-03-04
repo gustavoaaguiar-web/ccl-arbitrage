@@ -149,7 +149,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 CCL Arbitrage Monitor")
+    st.title("📊 GG HMM-CCL 🤑")
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
