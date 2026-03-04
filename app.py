@@ -19,7 +19,7 @@ from datetime import datetime, time as dtime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from iol_client import IOLClient
 from alpaca_client import AlpacaClient
