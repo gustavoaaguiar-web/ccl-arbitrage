@@ -36,7 +36,7 @@ from sheets_manager import SheetsManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="CCL Arbitrage", page_icon="📊", layout="wide")
+st.set_page_config(page_title="GG HMM CCL 🤑", page_icon="📊", layout="wide")
 
 REFRESH_SECONDS  = 60
 HORA_APERTURA    = dtime(11, 30)
