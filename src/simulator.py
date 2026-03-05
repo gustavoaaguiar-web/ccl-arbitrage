@@ -96,15 +96,19 @@ class Simulador:
 
     # ──────────────────── HORARIOS ───────────────────────
 
-    def puede_comprar(self) -> bool:
-        ahora = datetime.now().time()
+    def puede_comprar(self, ahora=None) -> bool:
+        if ahora is None:
+            ahora = datetime.now().time()
         return HORA_APERTURA <= ahora <= HORA_CIERRE_COMPRA
 
-    def debe_cerrar_forzado(self) -> bool:
-        return datetime.now().time() >= HORA_CIERRE_FORZADO
+    def debe_cerrar_forzado(self, ahora=None) -> bool:
+        if ahora is None:
+            ahora = datetime.now().time()
+        return ahora >= HORA_CIERRE_FORZADO
 
-    def mercado_abierto(self) -> bool:
-        ahora = datetime.now().time()
+    def mercado_abierto(self, ahora=None) -> bool:
+        if ahora is None:
+            ahora = datetime.now().time()
         return ahora >= HORA_APERTURA
 
     # ──────────────────── OPERACIONES ────────────────────
@@ -215,6 +219,7 @@ class Simulador:
         ccl_avg: float,
         precios_ars: Dict[str, float],
         climas: Dict[str, str],
+        ahora=None,
     ) -> dict:
         """
         Procesa un ciclo de señales:
@@ -228,7 +233,7 @@ class Simulador:
         forzadas  = []
 
         # 1. Cierre forzado
-        if self.debe_cerrar_forzado():
+        if self.debe_cerrar_forzado(ahora):
             forzadas = self.cerrar_todas(precios_ars, "CIERRE_FORZADO")
             return {"abiertas": [], "cerradas": [], "forzadas": forzadas}
 
@@ -256,7 +261,7 @@ class Simulador:
                 self.posiciones[symbol] = []
 
         # 4. Abrir posiciones con señal de compra
-        if self.puede_comprar():
+        if self.puede_comprar(ahora):
             for symbol, ccl in ccl_map.items():
                 if ccl_avg == 0:
                     continue
@@ -325,5 +330,4 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-  ]
-                            
+        ]
