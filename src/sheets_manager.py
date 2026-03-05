@@ -1,12 +1,12 @@
 """
 Google Sheets Manager
 =====================
-Maneja la persistencia del simulador y del historial CCL en Google Sheets.
-
 Hojas:
-- CCL_Historial   → snapshots CCL para HMM
-- Operaciones     → registro de cada trade cerrado
-- Estado_Cartera  → snapshots del capital total
+- CCL_Historial       → snapshots CCL para HMM
+- Operaciones         → registro de cada trade cerrado
+- Estado_Cartera      → snapshots del capital total
+- Posiciones_Abiertas → posiciones abiertas (persiste entre reinicios)
+- Simulador_Estado    → efectivo y contador (persiste entre reinicios)
 """
 
 import logging
@@ -23,7 +23,6 @@ SCOPES = [
 
 SHEET_NAME = "CCL-Arbitrage-Historial"
 
-# Encabezados por hoja
 HEADERS = {
     "CCL_Historial": ["timestamp", "ccl_avg", "GGAL", "YPFD", "PAMP", "CEPU",
                       "AMZN", "MSFT", "NVDA", "TSLA", "AAPL", "META", "GOOGL",
@@ -34,11 +33,21 @@ HEADERS = {
     "Estado_Cartera": ["timestamp", "capital_total", "efectivo", "en_posiciones",
                        "pnl_total", "pnl_pct", "operaciones_total", "win_rate",
                        "posiciones_abiertas"],
+    "Posiciones_Abiertas": ["id", "symbol", "cantidad", "precio_entry",
+                             "monto_entry", "ts_entry", "ccl_entry", "dev_entry"],
+    "Simulador_Estado": ["efectivo", "op_counter"],
 }
 
 
+def _f(s):
+    """Convierte string a float tolerando coma decimal."""
+    try:
+        return float(str(s).replace(",", ".").strip())
+    except:
+        return 0.0
+
+
 class SheetsManager:
-    """Maneja todas las operaciones con Google Sheets."""
 
     def __init__(self, service_account_info: dict):
         creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
@@ -57,9 +66,7 @@ class SheetsManager:
             return False
 
     def _inicializar_hojas(self):
-        """Crea las hojas si no existen y agrega encabezados."""
         hojas_existentes = [ws.title for ws in self.sh.worksheets()]
-
         for nombre, headers in HEADERS.items():
             if nombre not in hojas_existentes:
                 ws = self.sh.add_worksheet(title=nombre, rows=10000, cols=len(headers))
@@ -68,8 +75,6 @@ class SheetsManager:
             else:
                 ws = self.sh.worksheet(nombre)
             self._hojas[nombre] = ws
-
-        # Renombrar Sheet1 si existe vacía
         try:
             sheet1 = self.sh.worksheet("Sheet1")
             if len(sheet1.get_all_values()) <= 1:
@@ -80,39 +85,34 @@ class SheetsManager:
     # ─────────────── CCL HISTORIAL ───────────────────────
 
     def guardar_snapshot_ccl(self, ccl_map: dict, ccl_avg: float, ts: str = None):
-        """Guarda un snapshot de CCL para el HMM."""
         from datetime import datetime
         ws = self._hojas.get("CCL_Historial")
         if not ws:
             return
-        headers = HEADERS["CCL_Historial"]
-        simbolos = headers[2:]
+        simbolos = HEADERS["CCL_Historial"][2:]
         fila = [ts or datetime.now().strftime("%Y-%m-%d %H:%M:%S"), round(ccl_avg, 2)]
         fila += [round(ccl_map.get(sym, 0), 2) for sym in simbolos]
         ws.append_row(fila)
 
     def cargar_historial_ccl(self) -> list:
-        """Carga el historial CCL para alimentar el HMM."""
         ws = self._hojas.get("CCL_Historial")
         if not ws:
             return []
         filas = ws.get_all_values()
         if len(filas) < 2:
             return []
-
         headers  = filas[0]
         simbolos = headers[2:]
-
         historial = []
         for fila in filas[1:]:
             try:
                 ts  = fila[0]
-                avg = float(str(fila[1]).replace(",", "."))
+                avg = _f(fila[1])
                 ccl_dic = {}
                 for i, sym in enumerate(simbolos):
                     idx = i + 2
                     if idx < len(fila) and fila[idx]:
-                        val = float(str(fila[idx]).replace(",", "."))
+                        val = _f(fila[idx])
                         if val > 0:
                             ccl_dic[sym] = val
                 if ccl_dic:
@@ -124,20 +124,11 @@ class SheetsManager:
     # ─────────────── OPERACIONES ─────────────────────────
 
     def guardar_operacion(self, fila: list):
-        """Guarda una operación cerrada."""
         ws = self._hojas.get("Operaciones")
         if ws:
             ws.append_row(fila)
 
-    def guardar_operaciones_batch(self, filas: List[list]):
-        """Guarda múltiples operaciones de una vez."""
-        ws = self._hojas.get("Operaciones")
-        if ws and filas:
-            for fila in filas:
-                ws.append_row(fila)
-
     def cargar_operaciones(self) -> list:
-        """Carga el historial de operaciones."""
         ws = self._hojas.get("Operaciones")
         if not ws:
             return []
@@ -147,31 +138,85 @@ class SheetsManager:
     # ─────────────── ESTADO CARTERA ──────────────────────
 
     def guardar_estado_cartera(self, fila: list):
-        """Guarda snapshot del estado de la cartera."""
         ws = self._hojas.get("Estado_Cartera")
         if ws:
             ws.append_row(fila)
 
-    def cargar_ultimo_estado(self) -> dict:
-        """Carga el último estado guardado de la cartera."""
-        ws = self._hojas.get("Estado_Cartera")
+    # ─────────────── POSICIONES ABIERTAS ─────────────────
+
+    def guardar_posiciones(self, simulador):
+        """Sobreescribe la hoja con las posiciones abiertas actuales."""
+        ws = self._hojas.get("Posiciones_Abiertas")
         if not ws:
-            return {}
+            return
+        # Limpiar y reescribir
+        ws.clear()
+        ws.append_row(HEADERS["Posiciones_Abiertas"])
+        for sym, poss in simulador.posiciones.items():
+            for pos in poss:
+                ws.append_row([
+                    pos.id, sym,
+                    round(pos.cantidad, 6),
+                    round(pos.precio_entry, 4),
+                    round(pos.monto_entry, 2),
+                    pos.ts_entry,
+                    round(pos.ccl_entry, 4),
+                    round(pos.dev_entry, 4),
+                ])
+
+    def cargar_posiciones(self, simulador):
+        """Carga posiciones abiertas desde Sheets al simulador."""
+        from simulator import Posicion
+        ws = self._hojas.get("Posiciones_Abiertas")
+        if not ws:
+            return
         filas = ws.get_all_values()
         if len(filas) < 2:
-            return {}
-        ultima = filas[-1]
+            return
+        simulador.posiciones = {}
+        for fila in filas[1:]:
+            try:
+                pos = Posicion(
+                    id=fila[0],
+                    symbol=fila[1],
+                    cantidad=_f(fila[2]),
+                    precio_entry=_f(fila[3]),
+                    monto_entry=_f(fila[4]),
+                    ts_entry=fila[5],
+                    ccl_entry=_f(fila[6]),
+                    dev_entry=_f(fila[7]),
+                    precio_actual=_f(fila[3]),
+                )
+                sym = fila[1]
+                if sym not in simulador.posiciones:
+                    simulador.posiciones[sym] = []
+                simulador.posiciones[sym].append(pos)
+            except Exception as e:
+                logger.warning(f"Posición saltada: {e}")
+        logger.info(f"✅ Posiciones cargadas: {sum(len(v) for v in simulador.posiciones.values())}")
+
+    # ─────────────── SIMULADOR ESTADO ────────────────────
+
+    def guardar_estado_simulador(self, simulador):
+        """Guarda efectivo y contador de operaciones."""
+        ws = self._hojas.get("Simulador_Estado")
+        if not ws:
+            return
+        ws.clear()
+        ws.append_row(HEADERS["Simulador_Estado"])
+        ws.append_row([round(simulador.efectivo, 2), simulador._op_counter])
+
+    def cargar_estado_simulador(self, simulador):
+        """Restaura efectivo y contador."""
+        ws = self._hojas.get("Simulador_Estado")
+        if not ws:
+            return
+        filas = ws.get_all_values()
+        if len(filas) < 2:
+            return
         try:
-            return {
-                "ts":              ultima[0],
-                "capital_total":   float(ultima[1]),
-                "efectivo":        float(ultima[2]),
-                "en_posiciones":   float(ultima[3]),
-                "pnl_total":       float(ultima[4]),
-                "pnl_pct":         float(ultima[5]),
-                "operaciones_total": int(ultima[6]),
-                "win_rate":        float(ultima[7]),
-            }
-        except:
-            return {}
-          
+            simulador.efectivo    = _f(filas[1][0])
+            simulador._op_counter = int(_f(filas[1][1]))
+            logger.info(f"✅ Estado simulador cargado: efectivo=${simulador.efectivo:,.0f} ops={simulador._op_counter}")
+        except Exception as e:
+            logger.warning(f"Error cargando estado simulador: {e}")
