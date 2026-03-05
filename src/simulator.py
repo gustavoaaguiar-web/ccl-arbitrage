@@ -120,13 +120,14 @@ class Simulador:
         ccl: float,
         dev: float,
         precios_ars: Dict[str, float],
+        ahora=None,
     ) -> Optional[Posicion]:
         """
         Abre una posición de compra si se cumplen las condiciones.
         Retorna la posición creada o None si no se pudo abrir.
         """
         # Validaciones
-        if not self.puede_comprar():
+        if not self.puede_comprar(ahora):
             return None
         if self.posiciones_abiertas_count(symbol) >= MAX_POSICIONES_POR_ESPECIE:
             return None
@@ -271,7 +272,7 @@ class Simulador:
 
                 # Señal: desvío < -0.5% y clima BULL
                 if dev < -0.5 and clima == "🟢 BULL" and precio > 0:
-                    pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars)
+                    pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
                         abiertas.append(pos)
 
@@ -291,7 +292,6 @@ class Simulador:
 
         return {
             "capital_inicial":   self.capital_inicial,
-        
             "efectivo":          self.efectivo,
             "en_posiciones":     self.capital_en_posiciones(precios_ars),
             "capital_total":     cap_total,
@@ -331,4 +331,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-        ]
+    ]
+            
