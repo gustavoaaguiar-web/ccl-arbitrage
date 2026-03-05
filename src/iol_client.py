@@ -108,7 +108,7 @@ class IOLClient:
         try:
             resp = self.session.get(
                 f"{IOL_BASE_URL}/api/v2/{market}/Titulos/{symbol}/cotizacion",
-                params={"plazo": "t2"},
+                params={"plazo": "t0"},
                 timeout=10,
             )
             resp.raise_for_status()
