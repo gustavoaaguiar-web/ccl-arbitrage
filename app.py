@@ -233,7 +233,7 @@ def main():
 
     # Simulador
     if HORA_APERTURA <= ahora:
-        resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas)
+        resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
         ops_abiertas = resultado.get("abiertas", [])
         for op in ops_cerradas:
@@ -355,3 +355,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
