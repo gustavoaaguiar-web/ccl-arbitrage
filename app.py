@@ -16,10 +16,17 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
+TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
+
+def hora_argentina():
+    """Retorna datetime actual en horario de Argentina."""
+    return datetime.now(TZ_ARG)
 
 from iol_client import IOLClient
 from alpaca_client import AlpacaClient
@@ -107,29 +114,60 @@ def calcular_ccl(p_ars, p_usd):
     return ccl_map, avg
 
 # ── GMAIL ─────────────────────────────────────────────────
-def enviar_alerta(señales, ccl_avg):
+def enviar_mail(subject: str, cuerpo: str):
+    """Envía un mail genérico."""
     g = st.session_state.gmail
-    ahora = datetime.now()
-    nuevas = [s for s in señales
-              if (ahora - st.session_state.alertadas.get(s["sym"], datetime(2000,1,1))).seconds > 1800]
-    if not nuevas:
+    if not g["user"]:
         return
-    for s in nuevas:
-        st.session_state.alertadas[s["sym"]] = ahora
     try:
-        cuerpo = f"📊 CCL Arbitrage — Señales\nCCL Promedio: ${ccl_avg:.2f}\n\n"
-        for s in nuevas:
-            cuerpo += f"{s['sym']:<8} {s['dev']:>+7.2f}%  {s['clima']}  {s['señal']}\n"
-        cuerpo += f"\n⏰ {ahora.strftime('%d/%m/%Y %H:%M:%S')}"
         msg = MIMEMultipart()
         msg["From"] = msg["To"] = g["user"]
-        msg["Subject"] = f"🚨 CCL: {len(nuevas)} señales | ${ccl_avg:.0f}"
+        msg["Subject"] = subject
         msg.attach(MIMEText(cuerpo, "plain"))
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(g["user"], g["pass"])
             smtp.send_message(msg)
+        logger.info(f"📧 Mail enviado: {subject}")
     except Exception as e:
         logger.error(f"Gmail error: {e}")
+
+def alerta_señales(señales, ccl_avg):
+    """Avisa cuando hay señales activas (máx 1 vez cada 30 min por activo)."""
+    if not señales:
+        return
+    ahora = hora_argentina()
+    nuevas = [s for s in señales
+              if (ahora - st.session_state.alertadas.get(s["sym"], datetime(2000,1,1,tzinfo=TZ_ARG))).seconds > 1800]
+    if not nuevas:
+        return
+    for s in nuevas:
+        st.session_state.alertadas[s["sym"]] = ahora
+    cuerpo = f"📊 GG HMM-CCL — Señales Activas\n"
+    cuerpo += f"CCL Promedio: ${ccl_avg:.2f} | {ahora.strftime('%d/%m/%Y %H:%M:%S')}\n"
+    cuerpo += f"{'─'*40}\n"
+    for s in nuevas:
+        cuerpo += f"{s['sym']:<8} {s['dev']:>+7.2f}%  {s['clima']}  {s['señal']}\n"
+    enviar_mail(f"🚨 GG: {len(nuevas)} señal(es) | CCL ${ccl_avg:.0f}", cuerpo)
+
+def alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg):
+    """Avisa cuando el simulador ejecuta una compra o venta real."""
+    if not ops_abiertas and not ops_cerradas:
+        return
+    ahora = hora_argentina()
+    cuerpo = f"💹 GG HMM-CCL — Operación Ejecutada\n"
+    cuerpo += f"CCL Promedio: ${ccl_avg:.2f} | {ahora.strftime('%d/%m/%Y %H:%M:%S')}\n"
+    cuerpo += f"{'─'*40}\n"
+    if ops_abiertas:
+        cuerpo += f"\n🟢 COMPRAS ({len(ops_abiertas)}):\n"
+        for pos in ops_abiertas:
+            cuerpo += f"  {pos.symbol:<8} ${pos.precio_entry:,.1f} | Monto: ${pos.monto_entry:,.0f}\n"
+    if ops_cerradas:
+        cuerpo += f"\n🔴 VENTAS ({len(ops_cerradas)}):\n"
+        for op in ops_cerradas:
+            emoji = "✅" if op.pnl > 0 else "❌"
+            cuerpo += f"  {emoji} {op.symbol:<8} PnL: ${op.pnl:+,.0f} ({op.pnl_pct:+.2f}%) [{op.motivo_cierre}]\n"
+    n = len(ops_abiertas) + len(ops_cerradas)
+    enviar_mail(f"💹 GG: {n} op(s) ejecutada(s) | CCL ${ccl_avg:.0f}", cuerpo)
 
 # ── FETCH ─────────────────────────────────────────────────
 @st.cache_data(ttl=REFRESH_SECONDS)
@@ -149,7 +187,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 GG HMM-CCL 🤑")
+    st.title("📊 CCL Arbitrage Monitor")
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
@@ -159,7 +197,7 @@ def main():
     sheets    = st.session_state.sheets
     sim       = st.session_state.sim
     historial = st.session_state.historial
-    hora      = datetime.now()
+    hora      = hora_argentina()
     ahora     = hora.time()
 
     # Fetch
@@ -193,13 +231,14 @@ def main():
     if HORA_APERTURA <= ahora:
         resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
+        ops_abiertas = resultado.get("abiertas", [])
         for op in ops_cerradas:
             sheets.guardar_operacion(sim.fila_sheets_operacion(op))
         sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
+        alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
 
-    # Alertas
-    if señales_alerta:
-        enviar_alerta(señales_alerta, ccl_avg)
+    # Alertas señales (independiente del simulador)
+    alerta_señales(señales_alerta, ccl_avg)
 
     # ── KPIs ──────────────────────────────────────────────
     resumen = sim.resumen(p_ars)
@@ -304,3 +343,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
