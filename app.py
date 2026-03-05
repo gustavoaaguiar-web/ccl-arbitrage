@@ -36,7 +36,7 @@ from sheets_manager import SheetsManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-st.set_page_config(page_title="GG HMM CCL 🤑", page_icon="📊", layout="wide")
+st.set_page_config(page_title="CCL Arbitrage", page_icon="📊", layout="wide")
 
 REFRESH_SECONDS  = 60
 HORA_APERTURA    = dtime(11, 30)
@@ -187,7 +187,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 CCL Arbitrage Monitor")
+    st.title("📊 GG Hmm Ccl 🦅🤑")
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
@@ -343,4 +343,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
