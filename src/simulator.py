@@ -291,6 +291,7 @@ class Simulador:
 
         return {
             "capital_inicial":   self.capital_inicial,
+        
             "efectivo":          self.efectivo,
             "en_posiciones":     self.capital_en_posiciones(precios_ars),
             "capital_total":     cap_total,
