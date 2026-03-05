@@ -81,7 +81,11 @@ def init_state():
         sh.conectar()
         st.session_state.sheets   = sh
         st.session_state.historial = sh.cargar_historial_ccl()
-        st.session_state.sim      = Simulador()
+        # Restaurar simulador desde Sheets
+        sim = Simulador()
+        sh.cargar_estado_simulador(sim)
+        sh.cargar_posiciones(sim)
+        st.session_state.sim      = sim
         st.session_state.gmail    = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
         st.session_state.alertadas = {}
         st.session_state.ready    = True
@@ -187,7 +191,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 GG Hmm Ccl 🦅🤑")
+    st.title("📊 CCL Arbitrage Monitor")
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
@@ -235,6 +239,9 @@ def main():
         for op in ops_cerradas:
             sheets.guardar_operacion(sim.fila_sheets_operacion(op))
         sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
+        # Persistir estado del simulador en Sheets
+        sheets.guardar_posiciones(sim)
+        sheets.guardar_estado_simulador(sim)
         alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
 
     # Alertas señales (independiente del simulador)
@@ -333,7 +340,12 @@ def main():
         st.markdown(f"Ventana: 11:30 → 16:50")
         st.divider()
         if st.button("🔄 Reset simulador"):
-            st.session_state.sim = Simulador()
+            sim_nuevo = Simulador()
+            # Limpiar hojas de estado en Sheets
+            sheets.guardar_posiciones(sim_nuevo)
+            sheets.guardar_estado_simulador(sim_nuevo)
+            st.session_state.sim = sim_nuevo
+            st.success("✅ Simulador reseteado")
             st.rerun()
 
     st.caption(f"⏱ Próxima actualización en {REFRESH_SECONDS}s")
@@ -343,4 +355,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
