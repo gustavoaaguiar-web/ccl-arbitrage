@@ -236,12 +236,17 @@ def main():
         resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
         ops_abiertas = resultado.get("abiertas", [])
+        hay_cambios = bool(ops_abiertas or ops_cerradas)
         for op in ops_cerradas:
             sheets.guardar_operacion(sim.fila_sheets_operacion(op))
-        sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
-        # Persistir estado del simulador en Sheets
-        sheets.guardar_posiciones(sim)
-        sheets.guardar_estado_simulador(sim)
+        # Estado cartera: solo guardar cada 5 ciclos (~5 min) o si hay operaciones
+        ciclo_actual = int(time.time() // REFRESH_SECONDS)
+        if hay_cambios or ciclo_actual % 5 == 0:
+            sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
+        # Posiciones y estado: solo si hubo cambios
+        if hay_cambios:
+            sheets.guardar_posiciones(sim)
+            sheets.guardar_estado_simulador(sim)
         alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
 
     # Alertas señales (independiente del simulador)
@@ -355,4 +360,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
