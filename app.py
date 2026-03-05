@@ -174,7 +174,6 @@ def alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg):
     enviar_mail(f"💹 GG: {n} op(s) ejecutada(s) | CCL ${ccl_avg:.0f}", cuerpo)
 
 # ── FETCH ─────────────────────────────────────────────────
-@st.cache_data(ttl=REFRESH_SECONDS)
 def fetch_precios(ts_key):
     iol    = st.session_state.iol
     alpaca = st.session_state.alpaca
@@ -191,7 +190,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 CCL Arbitrage Monitor")
+    st.title("📊 GG invest 🦅🤑")
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
