@@ -187,7 +187,7 @@ def fetch_precios(ts_key):
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📊 GG Hmm Ccl 🦅🤑")
+    st.title("📊 GG Hmm-Ccl 🦅🤑)
     st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
 
     if not init_state():
@@ -343,3 +343,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
