@@ -365,21 +365,41 @@ def main():
     # ── Posiciones abiertas ────────────────────────────────
     if any(sim.posiciones.values()):
         st.subheader("💼 Posiciones Abiertas")
-        pos_rows = []
         for sym, poss in sim.posiciones.items():
             for pos in poss:
                 precio_actual = p_ars.get(sym, pos.precio_entry)
-                pnl = (precio_actual - pos.precio_entry) * pos.cantidad
-                pos_rows.append({
-                    "ID": pos.id, "Activo": sym,
-                    "Entrada": f"${pos.precio_entry:,.1f}",
-                    "Actual":  f"${precio_actual:,.1f}",
-                    "Cant.":   f"{pos.cantidad:.2f}",
-                    "Invertido": f"${pos.monto_entry:,.0f}",
-                    "PnL": f"${pnl:+,.0f}",
-                    "Hora entrada": pos.ts_entry,
-                })
-        st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+                pnl     = (precio_actual - pos.precio_entry) * pos.cantidad
+                pnl_pct = ((precio_actual / pos.precio_entry) - 1) * 100
+                emoji   = "✅" if pnl >= 0 else "🔻"
+
+                with st.expander(
+                    f"{emoji} {pos.id} — {sym}  |  PnL: ${pnl:+,.0f}  ({pnl_pct:+.2f}%)",
+                    expanded=True,
+                ):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Entrada",   f"${pos.precio_entry:,.1f}")
+                    c2.metric("Actual",    f"${precio_actual:,.1f}",  f"{pnl_pct:+.2f}%")
+                    c3.metric("Invertido", f"${pos.monto_entry:,.0f}")
+                    c4.metric("Cantidad",  f"{pos.cantidad:.2f} u.")
+
+                    st.caption(f"Apertura: {pos.ts_entry}  |  CCL entrada: ${pos.ccl_entry:,.2f}  |  Desvío entrada: {pos.dev_entry:+.2f}%")
+
+                    # Botón venta manual — solo simulador
+                    # TODO: REAL TRADING → agregar iol.place_order() aquí también
+                    if st.button(
+                        f"🔴 Vender {sym} ({pos.id}) — simulador",
+                        key=f"venta_manual_{pos.id}",
+                        type="primary",
+                    ):
+                        op = sim.cerrar_posicion(sym, pos, precio_actual, "VENTA_MANUAL")
+                        sim.posiciones[sym] = [p for p in sim.posiciones[sym] if p.id != pos.id]
+                        sheets.guardar_operacion(sim.fila_sheets_operacion(op))
+                        sheets.guardar_posiciones(sim)
+                        sheets.guardar_estado_simulador(sim)
+                        sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
+                        st.success(f"✅ {sym} vendido | PnL: ${op.pnl:+,.0f} ({op.pnl_pct:+.2f}%)")
+                        time.sleep(1)
+                        st.rerun()
 
     # ── Historial ops ──────────────────────────────────────
     with st.expander("📜 Historial de Operaciones"):
@@ -418,4 +438,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
