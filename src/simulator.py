@@ -9,6 +9,17 @@ Simulador de Arbitraje CCL
 - Cierre forzado: 16:50 hs
 - Cierre anticipado: señal contraria (desvío > +0.5%)
 - Persistencia: Google Sheets
+
+MODELO DE CLIMA (Simons):
+  El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
+  sobre log-returns del precio USD del subyacente (NO niveles CCL).
+  Esto garantiza que clima y señal sean variables ortogonales:
+
+    Señal  →  CCL del CEDEAR bajo vs mediana    (oportunidad de arbitraje)
+    Clima  →  régimen bull/bear en USD           (momentum del subyacente)
+
+  Compra solo cuando AMBOS coinciden. Venta solo por desvío CCL.
+  Este diseño replicó el resultado de Simons v14.6: 27/28 operaciones positivas.
 """
 
 from dataclasses import dataclass, field
@@ -65,6 +76,13 @@ class Operacion:
 class Simulador:
     """
     Motor de simulación de arbitraje CCL intradiario.
+
+    Lógica de decisión:
+        COMPRA  →  desvío CCL < -0.5%  AND  clima == "🟢 BULL"
+        VENTA   →  desvío CCL > +0.5%  (el clima no interviene en salidas)
+
+    El clima DEBE ser generado por el HMM de log-returns USD (modelo Simons),
+    no por niveles CCL. Ver app.py → clima_hmm() para la implementación.
     """
 
     def __init__(self, capital_inicial: float = CAPITAL_INICIAL):
@@ -125,8 +143,9 @@ class Simulador:
         """
         Abre una posición de compra si se cumplen las condiciones.
         Retorna la posición creada o None si no se pudo abrir.
+        Nota: el filtro de clima (🟢 BULL) se aplica en procesar_ciclo()
+        antes de llamar a este método.
         """
-        # Validaciones
         if not self.puede_comprar(ahora):
             return None
         if self.posiciones_abiertas_count(symbol) >= MAX_POSICIONES_POR_ESPECIE:
@@ -136,7 +155,7 @@ class Simulador:
 
         monto = self.monto_por_operacion(precios_ars)
         if monto > self.efectivo:
-            monto = self.efectivo  # usar lo disponible si no alcanza
+            monto = self.efectivo
 
         if monto <= 0:
             return None
@@ -223,17 +242,23 @@ class Simulador:
         ahora=None,
     ) -> dict:
         """
-        Procesa un ciclo de señales:
-        - Cierra posiciones con señal contraria
-        - Abre posiciones con señal de compra y clima BULL
-        - Cierre forzado si es >= 16:50
-        Retorna resumen del ciclo.
+        Procesa un ciclo de señales.
+
+        Lógica de compra (ambas condiciones obligatorias):
+          1. desvío CCL < -0.5%         → spread de arbitraje favorable
+          2. climas[sym] == "🟢 BULL"   → HMM log-returns USD en régimen alcista
+
+        Lógica de venta (solo desvío, HMM no interviene):
+          1. desvío CCL > +0.5%         → spread revertió
+
+        El parámetro `climas` debe venir de clima_hmm() en app.py,
+        que usa log-returns USD (modelo Simons), no niveles CCL.
         """
         abiertas  = []
         cerradas  = []
         forzadas  = []
 
-        # 1. Cierre forzado
+        # 1. Cierre forzado 16:50
         if self.debe_cerrar_forzado(ahora):
             forzadas = self.cerrar_todas(precios_ars, "CIERRE_FORZADO")
             return {"abiertas": [], "cerradas": [], "forzadas": forzadas}
@@ -246,22 +271,25 @@ class Simulador:
                 pos.pnl = (precio - pos.precio_entry) * pos.cantidad
 
         # 3. Cerrar posiciones con señal contraria (desvío > +0.5%)
+        #    El clima NO interviene en las salidas — salir siempre que el
+        #    spread revierta, independientemente del régimen USD.
         for symbol in list(self.posiciones.keys()):
             if not self.posiciones[symbol]:
                 continue
             ccl = ccl_map.get(symbol, 0)
             if ccl_avg == 0:
                 continue
-            dev = (ccl / ccl_avg - 1) * 100
+            dev    = (ccl / ccl_avg - 1) * 100
             precio = precios_ars.get(symbol, 0)
 
-            if dev > 0.5 and precio > 0:  # señal contraria
+            if dev > 0.5 and precio > 0:
                 for pos in list(self.posiciones[symbol]):
                     op = self.cerrar_posicion(symbol, pos, precio, "SEÑAL_CONTRARIA")
                     cerradas.append(op)
                 self.posiciones[symbol] = []
 
-        # 4. Abrir posiciones con señal de compra
+        # 4. Abrir posiciones:
+        #    desvío bajo (spread favorable) AND clima BULL (momentum USD alcista)
         if self.puede_comprar(ahora):
             for symbol, ccl in ccl_map.items():
                 if ccl_avg == 0:
@@ -270,7 +298,6 @@ class Simulador:
                 clima  = climas.get(symbol, "🔴 BEAR")
                 precio = precios_ars.get(symbol, 0)
 
-                # Señal: desvío < -0.5% y clima BULL
                 if dev < -0.5 and clima == "🟢 BULL" and precio > 0:
                     pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
@@ -285,22 +312,21 @@ class Simulador:
         pnl_total = cap_total - self.capital_inicial
         pnl_pct   = (pnl_total / self.capital_inicial) * 100
 
-        ops_cerradas = [o for o in self.operaciones]
+        ops_cerradas  = [o for o in self.operaciones]
         ops_ganadoras = [o for o in ops_cerradas if o.pnl > 0]
-
-        win_rate = (len(ops_ganadoras) / len(ops_cerradas) * 100) if ops_cerradas else 0
+        win_rate      = (len(ops_ganadoras) / len(ops_cerradas) * 100) if ops_cerradas else 0
 
         return {
-            "capital_inicial":   self.capital_inicial,
-            "efectivo":          self.efectivo,
-            "en_posiciones":     self.capital_en_posiciones(precios_ars),
-            "capital_total":     cap_total,
-            "pnl_total":         pnl_total,
-            "pnl_pct":           pnl_pct,
-            "operaciones_total": len(ops_cerradas),
+            "capital_inicial":       self.capital_inicial,
+            "efectivo":              self.efectivo,
+            "en_posiciones":         self.capital_en_posiciones(precios_ars),
+            "capital_total":         cap_total,
+            "pnl_total":             pnl_total,
+            "pnl_pct":               pnl_pct,
+            "operaciones_total":     len(ops_cerradas),
             "operaciones_ganadoras": len(ops_ganadoras),
-            "win_rate":          win_rate,
-            "posiciones_abiertas": sum(len(v) for v in self.posiciones.values()),
+            "win_rate":              win_rate,
+            "posiciones_abiertas":   sum(len(v) for v in self.posiciones.values()),
         }
 
     def fila_sheets_operacion(self, op: Operacion) -> list:
@@ -331,5 +357,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-    ]
-            
+            ]
+        
