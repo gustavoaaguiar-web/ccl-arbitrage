@@ -4,7 +4,7 @@ Simulador de Arbitraje CCL
 - Capital inicial: ARS 10.000.000
 - Por operación: 15% del capital total (efectivo + posiciones valoradas)
 - Máximo 2 posiciones por especie
-- Apertura: 11:30 hs Argentina (ambos mercados abiertos)
+- Apertura: 10:30 hs Argentina (ambos mercados abiertos)
 - Cierre nuevas compras: 16:30 hs
 - Cierre forzado: 16:50 hs
 - Cierre anticipado: señal contraria (desvío > +0.5%)
@@ -30,7 +30,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ─── HORARIOS ────────────────────────────────────────────
-HORA_APERTURA      = time(11, 30)   # Ambos mercados abiertos
+# Apertura ajustada por DST de EEUU (desde segundo domingo de marzo):
+# NYSE abre 9:30 ET (UTC-4) = 10:30 ART (UTC-3)
+# Cierre sin cambio: NYSE cierra 16:00 ET = 17:00 ART siempre
+HORA_APERTURA      = time(10, 30)   # Ambos mercados abiertos
 HORA_CIERRE_COMPRA = time(16, 30)   # No más compras
 HORA_CIERRE_FORZADO = time(16, 50)  # Cierre todas las posiciones
 
@@ -357,5 +360,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-      ]
-      
+          ]
+          
