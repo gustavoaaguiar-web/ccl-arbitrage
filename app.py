@@ -53,7 +53,10 @@ logger = logging.getLogger(__name__)
 st.set_page_config(page_title="CCL Arbitrage", page_icon="📊", layout="wide")
 
 REFRESH_SECONDS  = 60
-HORA_APERTURA    = dtime(11, 30)
+# Apertura ajustada por DST de EEUU (desde segundo domingo de marzo):
+# NYSE abre 9:30 ET (UTC-4) = 10:30 ART (UTC-3)
+# Cierre sin cambio: NYSE cierra 16:00 ET = 17:00 ART siempre
+HORA_APERTURA    = dtime(10, 30)
 HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
 
@@ -438,3 +441,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+      
