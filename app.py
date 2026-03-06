@@ -3,11 +3,16 @@ CCL Arbitrage - App Streamlit Completa
 =======================================
 Dashboard en tiempo real con:
 - CCL implícito por acción
-- Señales 🟢🟡🔴 por desvío
+- Señales 🟢🟡🔴 por desvío + filtro HMM (consistente con simulador)
 - Clima HMM 🟢/🔴 por activo
 - Simulador con interés compuesto
 - Alertas Gmail
 - Persistencia Google Sheets
+
+PENDIENTE (dinero real):
+- Lógica de órdenes IOL (compra/venta)
+- Manejo de puntas y precio límite
+- Ver bloque marcado con # TODO: REAL TRADING
 """
 
 import time, json, logging, smtplib, statistics
@@ -81,7 +86,6 @@ def init_state():
         sh.conectar()
         st.session_state.sheets   = sh
         st.session_state.historial = sh.cargar_historial_ccl()
-        # Restaurar simulador desde Sheets
         sim = Simulador()
         sh.cargar_estado_simulador(sim)
         sh.cargar_posiciones(sim)
@@ -119,7 +123,6 @@ def calcular_ccl(p_ars, p_usd):
 
 # ── GMAIL ─────────────────────────────────────────────────
 def enviar_mail(subject: str, cuerpo: str):
-    """Envía un mail genérico."""
     g = st.session_state.gmail
     if not g["user"]:
         return
@@ -136,7 +139,6 @@ def enviar_mail(subject: str, cuerpo: str):
         logger.error(f"Gmail error: {e}")
 
 def alerta_señales(señales, ccl_avg):
-    """Avisa cuando hay señales activas (máx 1 vez cada 30 min por activo)."""
     if not señales:
         return
     ahora = hora_argentina()
@@ -154,7 +156,6 @@ def alerta_señales(señales, ccl_avg):
     enviar_mail(f"🚨 GG: {len(nuevas)} señal(es) | CCL ${ccl_avg:.0f}", cuerpo)
 
 def alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg):
-    """Avisa cuando el simulador ejecuta una compra o venta real."""
     if not ops_abiertas and not ops_cerradas:
         return
     ahora = hora_argentina()
@@ -203,25 +204,32 @@ def main():
     hora      = hora_argentina()
     ahora     = hora.time()
 
-    # Fetch
     ts_key = str(int(time.time() // REFRESH_SECONDS))
     p_ars, p_usd = fetch_precios(ts_key)
 
-    # CCL
     ccl_map, ccl_avg = calcular_ccl(p_ars, p_usd)
 
-    # Guardar snapshot
     if ccl_map:
         historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg})
         sheets.guardar_snapshot_ccl(ccl_map, ccl_avg)
 
-    # Señales y climas
+    # ── Señales y climas ───────────────────────────────────
     rows, señales_alerta, climas = [], [], {}
     for sym, ccl in ccl_map.items():
         dev   = (ccl / ccl_avg - 1) * 100 if ccl_avg else 0
         clima = clima_hmm(sym, historial)
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
-        señal = "🟢 COMPRAR" if dev < -0.5 else "🔴 VENDER" if dev > 0.5 else "🟡 NEUTRAL"
+
+        # FIX: señal visible consistente con lo que ejecuta el simulador.
+        # Compra solo si desvío bajo Y clima BULL — igual que procesar_ciclo().
+        # Venta solo por desvío, sin filtro HMM — igual que procesar_ciclo().
+        if dev < -0.5 and clima == "🟢":
+            señal = "🟢 COMPRAR"
+        elif dev > 0.5:
+            señal = "🔴 VENDER"
+        else:
+            señal = "🟡 NEUTRAL"
+
         rows.append({
             "sym": sym, "ccl": ccl, "dev": dev, "clima": clima,
             "señal": señal, "p_ars": p_ars.get(sym, 0),
@@ -230,25 +238,52 @@ def main():
         if señal != "🟡 NEUTRAL":
             señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": señal})
 
-    # Simulador
+    # ── Simulador ──────────────────────────────────────────
     if HORA_APERTURA <= ahora:
         resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
         ops_abiertas = resultado.get("abiertas", [])
         hay_cambios = bool(ops_abiertas or ops_cerradas)
+
         for op in ops_cerradas:
             sheets.guardar_operacion(sim.fila_sheets_operacion(op))
-        # Estado cartera: solo guardar cada 5 ciclos (~5 min) o si hay operaciones
+
         ciclo_actual = int(time.time() // REFRESH_SECONDS)
         if hay_cambios or ciclo_actual % 5 == 0:
             sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
-        # Posiciones y estado: solo si hubo cambios
+
         if hay_cambios:
             sheets.guardar_posiciones(sim)
             sheets.guardar_estado_simulador(sim)
+
         alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
 
-    # Alertas señales (independiente del simulador)
+        # ── TODO: REAL TRADING ─────────────────────────────
+        # Cuando se opere con dinero real en IOL, agregar aquí:
+        #
+        # for pos in ops_abiertas:
+        #     iol.place_order(
+        #         symbol   = pos.symbol,
+        #         cantidad = pos.cantidad,
+        #         precio   = pos.precio_entry,   # ajustar a lógica de puntas
+        #         tipo     = "compra",
+        #         mercado  = "bCBA",
+        #     )
+        #
+        # for op in ops_cerradas:
+        #     if op.motivo_cierre != "CIERRE_FORZADO":
+        #         iol.place_order(
+        #             symbol   = op.symbol,
+        #             cantidad = op.cantidad,
+        #             precio   = op.precio_exit,  # ajustar a lógica de puntas
+        #             tipo     = "venta",
+        #             mercado  = "bCBA",
+        #         )
+        #
+        # La lógica de filtrado HMM ya está correcta en simulator.py,
+        # no hace falta tocarla. Solo descomentar y ajustar puntas/límites.
+        # ──────────────────────────────────────────────────
+
     alerta_señales(señales_alerta, ccl_avg)
 
     # ── KPIs ──────────────────────────────────────────────
@@ -272,7 +307,12 @@ def main():
 
     # ── Gráfico ────────────────────────────────────────────
     rows_sorted = sorted(rows, key=lambda x: x["dev"])
-    colors = ["#00C851" if r["señal"]=="🟢 COMPRAR" else "#FF4444" if r["señal"]=="🔴 VENDER" else "#888" for r in rows_sorted]
+    colors = [
+        "#00C851" if r["señal"] == "🟢 COMPRAR"
+        else "#FF4444" if r["señal"] == "🔴 VENDER"
+        else "#888"
+        for r in rows_sorted
+    ]
     fig = go.Figure(go.Bar(
         x=[r["sym"] for r in rows_sorted],
         y=[r["dev"] for r in rows_sorted],
@@ -345,7 +385,6 @@ def main():
         st.divider()
         if st.button("🔄 Reset simulador"):
             sim_nuevo = Simulador()
-            # Limpiar hojas de estado en Sheets
             sheets.guardar_posiciones(sim_nuevo)
             sheets.guardar_estado_simulador(sim_nuevo)
             st.session_state.sim = sim_nuevo
