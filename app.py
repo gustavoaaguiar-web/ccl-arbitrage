@@ -4,10 +4,19 @@ CCL Arbitrage - App Streamlit Completa
 Dashboard en tiempo real con:
 - CCL implícito por acción
 - Señales 🟢🟡🔴 por desvío + filtro HMM (consistente con simulador)
-- Clima HMM 🟢/🔴 por activo
+- Clima HMM 🟢/🔴 por activo — modelo Simons (log-returns USD)
 - Simulador con interés compuesto
 - Alertas Gmail
 - Persistencia Google Sheets
+
+MODELO DE CLIMA (Simons):
+  El HMM se entrena sobre log-returns del precio USD del subyacente,
+  NO sobre niveles del CCL. Esto garantiza que la señal (CCL bajo) y
+  el clima (momentum USD alcista) sean variables ortogonales e independientes,
+  lo que mejora significativamente la calidad de las señales de compra.
+
+  Señal de compra = spread CCL favorable  AND  régimen bull en USD
+  Señal de venta  = spread CCL desfavorable  (HMM no interviene)
 
 PENDIENTE (dinero real):
 - Lógica de órdenes IOL (compra/venta)
@@ -95,17 +104,26 @@ def init_state():
         st.session_state.ready    = True
     return True
 
-# ── HMM ───────────────────────────────────────────────────
+# ── HMM — MODELO SIMONS ───────────────────────────────────
+# Entrena sobre log-returns del precio USD del subyacente (no niveles CCL).
+# Esto hace al clima ortogonal a la señal CCL → menor redundancia,
+# mayor calidad de filtrado. Mismo modelo que Simons v14.6.
 def clima_hmm(sym, historial):
-    vals = [h["ccl"].get(sym) for h in historial if h["ccl"].get(sym)]
-    if len(vals) < 5:
-        return "🔴"
+    """
+    Retorna 🟢 si el subyacente USD está en régimen bull, 🔴 si no.
+    Usa log-returns del precio USD acumulados en el historial de la sesión.
+    Requiere mínimo 5 snapshots con precio USD disponible.
+    """
+    sym_usd = PARES[sym][0]  # mapear CEDEAR → ticker USD (ej: YPFD → YPF)
+    precios = [h["usd"].get(sym_usd) for h in historial if h.get("usd", {}).get(sym_usd)]
+    if len(precios) < 5:
+        return "🔴"  # insuficiente historia → conservador
     try:
         from hmmlearn.hmm import GaussianHMM
-        X = np.array(vals).reshape(-1, 1)
-        m = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(X)
-        estado = m.predict(X)[-1]
-        bull   = np.argmax(m.means_.flatten())
+        ret = np.diff(np.log(precios)).reshape(-1, 1)  # log-returns, estacionarios
+        m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
+        estado = m.predict(ret)[-1]
+        bull   = np.argmax(m.means_.flatten())  # estado con mayor media = bull
         return "🟢" if estado == bull else "🔴"
     except:
         return "🔴"
@@ -210,7 +228,9 @@ def main():
     ccl_map, ccl_avg = calcular_ccl(p_ars, p_usd)
 
     if ccl_map:
-        historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg})
+        # Guardar CCL + precios USD en el snapshot para que el HMM
+        # tenga histórico de log-returns USD (modelo Simons)
+        historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg, "usd": p_usd})
         sheets.guardar_snapshot_ccl(ccl_map, ccl_avg)
 
     # ── Señales y climas ───────────────────────────────────
@@ -398,3 +418,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
