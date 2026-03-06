@@ -70,7 +70,7 @@ class Operacion:
     pnl_pct:      float
     ts_entry:     str
     ts_exit:      str
-    motivo_cierre: str         # SEÑAL_CONTRARIA / CIERRE_FORZADO
+    motivo_cierre: str         # SEÑAL_CONTRARIA / CIERRE_FORZADO / VENTA_MANUAL
 
 
 class Simulador:
@@ -357,5 +357,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-            ]
-        
+      ]
+                                          
