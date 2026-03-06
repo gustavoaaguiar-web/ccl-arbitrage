@@ -358,4 +358,4 @@ class Simulador:
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
       ]
-                                          
+      
