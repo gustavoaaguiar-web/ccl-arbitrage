@@ -58,9 +58,14 @@ def cargar_precios():
     return df, ccl_cols
 
 def calcular_desvios(df_precios, cols):
-    """Calcula desvíos usando la mediana de las columnas indicadas (grupo propio)."""
+    """
+    Calcula desvíos usando la mediana de las columnas indicadas (grupo propio).
+    Filtra outliers (|desvío| > 10%) que son precios malos de IOL (0, stale, etc).
+    """
     mediana = df_precios[cols].median(axis=1)
     desvios = (df_precios[cols].div(mediana, axis=0) - 1) * 100
+    # Reemplazar outliers con NaN — no eliminar filas completas
+    desvios = desvios.where(desvios.abs() <= 10)
     desvios["timestamp"] = df_precios["timestamp"].values
     return desvios
 
@@ -73,7 +78,11 @@ if df_precios is None:
     st.stop()
 
 n_snapshots = len(df_precios)
-st.success(f"✅ {n_snapshots} snapshots cargados")
+
+# Calcular cuántos ticks malos hay en total para informar al usuario
+desvios_raw = (df_precios[ccl_cols].div(df_precios[ccl_cols].median(axis=1), axis=0) - 1) * 100
+n_outliers = (desvios_raw.abs() > 10).sum().sum()
+st.success(f"✅ {n_snapshots} snapshots cargados — {n_outliers} ticks malos filtrados (|desvío| > 10%)")
 
 if st.button("🔄 Actualizar datos"):
     st.cache_data.clear()
