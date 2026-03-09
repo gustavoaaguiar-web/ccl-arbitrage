@@ -10,9 +10,9 @@ Simulador de Arbitraje CCL
 
 CONDICIONES DE SALIDA (cualquiera activa el cierre):
   +0.50%  desvío CCL          → señal contraria original
-  +0.35%  desvío CCL          → [A] salida anticipada del spread
-  dev≥0%  Y  caída ≥0.25%     → [B] trailing desde pico (spread neutro + deterioro)
-  PnL ≤ -0.66%                → [C] stop loss duro
+  +0.20%  desvío CCL          → [A] salida anticipada del spread
+  dev≥0%  Y  caída PnL≥0.15% → [B] trailing desde pico (spread neutro + deterioro)
+  PnL precio ≤ -0.66%         → [C] stop loss duro sobre precio de compra
 
 MODELO DE CLIMA (Simons):
   El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
@@ -45,11 +45,11 @@ MAX_POSICIONES_POR_ESPECIE = 2
 UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_ORIGINAL = 0.50   # señal contraria clásica (%)
-UMBRAL_VENTA_A        = 0.35   # [A] salida anticipada del spread (%)
-UMBRAL_VENTA_B_DEV    = 0.00   # [B] spread neutralizado (%)
-UMBRAL_VENTA_B_CAIDA  = 0.25   # [B] caída desde pico para activar trailing (%)
-STOP_LOSS_C           = -0.66  # [C] stop loss duro (%)
+UMBRAL_VENTA_ORIGINAL = 0.50   # desvío CCL — señal contraria clásica (%)
+UMBRAL_VENTA_A        = 0.20   # desvío CCL — [A] salida anticipada (%)
+UMBRAL_VENTA_B_DEV    = 0.00   # desvío CCL — [B] spread neutralizado (%)
+UMBRAL_VENTA_B_CAIDA  = 0.15   # caída desde pico PnL% para activar trailing (%)
+STOP_LOSS_C           = -0.66  # variación precio sobre precio de compra (pnl_pct %)
 
 
 @dataclass
@@ -388,5 +388,4 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-      ]
-      
+        ]
