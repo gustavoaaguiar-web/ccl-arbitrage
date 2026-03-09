@@ -424,7 +424,7 @@ def main():
         st.markdown(f"Capital inicial: $10.000.000")
         st.markdown(f"Por operación: 15%")
         st.markdown(f"Máx./especie: 2")
-        st.markdown(f"Ventana: 11:30 → 16:50")
+        st.markdown(f"Ventana: 10:30 → 16:50")
         st.divider()
         if st.button("🔄 Reset simulador"):
             sim_nuevo = Simulador()
