@@ -7,8 +7,12 @@ Simulador de Arbitraje CCL
 - Apertura: 10:30 hs Argentina (ambos mercados abiertos)
 - Cierre nuevas compras: 16:30 hs
 - Cierre forzado: 16:50 hs
-- Cierre anticipado: señal contraria (desvío > +0.5%)
-- Persistencia: Google Sheets
+
+CONDICIONES DE SALIDA (cualquiera activa el cierre):
+  +0.50%  desvío CCL          → señal contraria original
+  +0.35%  desvío CCL          → [A] salida anticipada del spread
+  dev≥0%  Y  caída ≥0.25%     → [B] trailing desde pico (spread neutro + deterioro)
+  PnL ≤ -0.66%                → [C] stop loss duro
 
 MODELO DE CLIMA (Simons):
   El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
@@ -19,7 +23,6 @@ MODELO DE CLIMA (Simons):
     Clima  →  régimen bull/bear en USD           (momentum del subyacente)
 
   Compra solo cuando AMBOS coinciden. Venta solo por desvío CCL.
-  Este diseño replicó el resultado de Simons v14.6: 27/28 operaciones positivas.
 """
 
 from dataclasses import dataclass, field
@@ -30,50 +33,59 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ─── HORARIOS ────────────────────────────────────────────
-# Apertura ajustada por DST de EEUU (desde segundo domingo de marzo):
-# NYSE abre 9:30 ET (UTC-4) = 10:30 ART (UTC-3)
-# Cierre sin cambio: NYSE cierra 16:00 ET = 17:00 ART siempre
-HORA_APERTURA      = time(10, 30)   # Ambos mercados abiertos
-HORA_CIERRE_COMPRA = time(16, 30)   # No más compras
-HORA_CIERRE_FORZADO = time(16, 50)  # Cierre todas las posiciones
+HORA_APERTURA       = time(10, 30)
+HORA_CIERRE_COMPRA  = time(16, 30)
+HORA_CIERRE_FORZADO = time(16, 50)
 
-# ─── PARÁMETROS ──────────────────────────────────────────
-CAPITAL_INICIAL    = 10_000_000.0   # ARS
-PCT_POR_OPERACION  = 0.15           # 15% del capital total
+# ─── PARÁMETROS DE ENTRADA ───────────────────────────────
+CAPITAL_INICIAL            = 10_000_000.0
+PCT_POR_OPERACION          = 0.15
 MAX_POSICIONES_POR_ESPECIE = 2
+
+UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
+
+# ─── PARÁMETROS DE SALIDA ────────────────────────────────
+UMBRAL_VENTA_ORIGINAL = 0.50   # señal contraria clásica (%)
+UMBRAL_VENTA_A        = 0.35   # [A] salida anticipada del spread (%)
+UMBRAL_VENTA_B_DEV    = 0.00   # [B] spread neutralizado (%)
+UMBRAL_VENTA_B_CAIDA  = 0.25   # [B] caída desde pico para activar trailing (%)
+STOP_LOSS_C           = -0.66  # [C] stop loss duro (%)
 
 
 @dataclass
 class Posicion:
     """Representa una posición abierta."""
-    id:           str
-    symbol:       str
-    cantidad:     float        # unidades compradas
-    precio_entry: float        # precio ARS de entrada
-    monto_entry:  float        # ARS invertidos
-    ts_entry:     str
-    ccl_entry:    float        # CCL al momento de entrada
-    dev_entry:    float        # desviación al momento de entrada
+    id:            str
+    symbol:        str
+    cantidad:      float
+    precio_entry:  float
+    monto_entry:   float
+    ts_entry:      str
+    ccl_entry:     float
+    dev_entry:     float
     precio_actual: float = 0.0
-    pnl:          float = 0.0  # ganancia/pérdida en ARS
+    pnl:           float = 0.0
+    pnl_pct:       float = 0.0   # PnL % actual
+    pnl_max_pct:   float = 0.0   # pico máximo de PnL % alcanzado (para condición B)
 
 
 @dataclass
 class Operacion:
     """Registro de una operación cerrada."""
-    id:           str
-    symbol:       str
-    tipo:         str          # COMPRA / VENTA
-    cantidad:     float
-    precio_entry: float
-    precio_exit:  float
-    monto_entry:  float
-    monto_exit:   float
-    pnl:          float
-    pnl_pct:      float
-    ts_entry:     str
-    ts_exit:      str
-    motivo_cierre: str         # SEÑAL_CONTRARIA / CIERRE_FORZADO / VENTA_MANUAL
+    id:            str
+    symbol:        str
+    tipo:          str
+    cantidad:      float
+    precio_entry:  float
+    precio_exit:   float
+    monto_entry:   float
+    monto_exit:    float
+    pnl:           float
+    pnl_pct:       float
+    ts_entry:      str
+    ts_exit:       str
+    motivo_cierre: str   # SEÑAL_CONTRARIA / SALIDA_A / SALIDA_B / STOP_LOSS_C /
+                         # CIERRE_FORZADO / VENTA_MANUAL
 
 
 class Simulador:
@@ -82,23 +94,19 @@ class Simulador:
 
     Lógica de decisión:
         COMPRA  →  desvío CCL < -0.5%  AND  clima == "🟢 BULL"
-        VENTA   →  desvío CCL > +0.5%  (el clima no interviene en salidas)
-
-    El clima DEBE ser generado por el HMM de log-returns USD (modelo Simons),
-    no por niveles CCL. Ver app.py → clima_hmm() para la implementación.
+        VENTA   →  cualquiera de las condiciones de salida se cumple
     """
 
     def __init__(self, capital_inicial: float = CAPITAL_INICIAL):
         self.capital_inicial   = capital_inicial
         self.efectivo          = capital_inicial
-        self.posiciones:  Dict[str, List[Posicion]] = {}   # {symbol: [pos1, pos2]}
+        self.posiciones:  Dict[str, List[Posicion]] = {}
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
 
     # ──────────────────── ESTADO ─────────────────────────
 
     def capital_en_posiciones(self, precios_ars: Dict[str, float]) -> float:
-        """Valor actual de todas las posiciones abiertas."""
         total = 0.0
         for sym, poss in self.posiciones.items():
             precio = precios_ars.get(sym, 0)
@@ -132,6 +140,40 @@ class Simulador:
             ahora = datetime.now().time()
         return ahora >= HORA_APERTURA
 
+    # ──────────────────── CONDICIONES DE SALIDA ──────────
+
+    def _evaluar_salida(self, pos: Posicion, dev: float) -> Optional[str]:
+        """
+        Evalúa si una posición debe cerrarse. Retorna el motivo o None.
+
+        Orden de prioridad (de más a menos urgente):
+          1. [C] Stop loss duro
+          2. [+0.5%] Señal contraria original
+          3. [A] Salida anticipada del spread
+          4. [B] Trailing desde pico con spread neutro
+        """
+        pnl_pct = pos.pnl_pct
+
+        # [C] Stop loss duro — prioridad máxima
+        if pnl_pct <= STOP_LOSS_C:
+            return "STOP_LOSS_C"
+
+        # Señal contraria original
+        if dev >= UMBRAL_VENTA_ORIGINAL:
+            return "SEÑAL_CONTRARIA"
+
+        # [A] Salida anticipada del spread
+        if dev >= UMBRAL_VENTA_A:
+            return "SALIDA_A"
+
+        # [B] Spread neutralizado + caída desde pico
+        if dev >= UMBRAL_VENTA_B_DEV:
+            caida_desde_pico = pos.pnl_max_pct - pnl_pct
+            if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
+                return "SALIDA_B"
+
+        return None
+
     # ──────────────────── OPERACIONES ────────────────────
 
     def abrir_posicion(
@@ -143,12 +185,6 @@ class Simulador:
         precios_ars: Dict[str, float],
         ahora=None,
     ) -> Optional[Posicion]:
-        """
-        Abre una posición de compra si se cumplen las condiciones.
-        Retorna la posición creada o None si no se pudo abrir.
-        Nota: el filtro de clima (🟢 BULL) se aplica en procesar_ciclo()
-        antes de llamar a este método.
-        """
         if not self.puede_comprar(ahora):
             return None
         if self.posiciones_abiertas_count(symbol) >= MAX_POSICIONES_POR_ESPECIE:
@@ -159,7 +195,6 @@ class Simulador:
         monto = self.monto_por_operacion(precios_ars)
         if monto > self.efectivo:
             monto = self.efectivo
-
         if monto <= 0:
             return None
 
@@ -176,6 +211,8 @@ class Simulador:
             ccl_entry=ccl,
             dev_entry=dev,
             precio_actual=precio_ars,
+            pnl_pct=0.0,
+            pnl_max_pct=0.0,
         )
 
         self.efectivo -= monto
@@ -193,7 +230,6 @@ class Simulador:
         precio_ars: float,
         motivo: str,
     ) -> Operacion:
-        """Cierra una posición y registra la operación."""
         monto_exit = pos.cantidad * precio_ars
         pnl        = monto_exit - pos.monto_entry
         pnl_pct    = (pnl / pos.monto_entry) * 100
@@ -222,7 +258,6 @@ class Simulador:
         return op
 
     def cerrar_todas(self, precios_ars: Dict[str, float], motivo: str = "CIERRE_FORZADO"):
-        """Cierra todas las posiciones abiertas."""
         cerradas = []
         for symbol in list(self.posiciones.keys()):
             precio = precios_ars.get(symbol, 0)
@@ -244,38 +279,27 @@ class Simulador:
         climas: Dict[str, str],
         ahora=None,
     ) -> dict:
-        """
-        Procesa un ciclo de señales.
-
-        Lógica de compra (ambas condiciones obligatorias):
-          1. desvío CCL < -0.5%         → spread de arbitraje favorable
-          2. climas[sym] == "🟢 BULL"   → HMM log-returns USD en régimen alcista
-
-        Lógica de venta (solo desvío, HMM no interviene):
-          1. desvío CCL > +0.5%         → spread revertió
-
-        El parámetro `climas` debe venir de clima_hmm() en app.py,
-        que usa log-returns USD (modelo Simons), no niveles CCL.
-        """
-        abiertas  = []
-        cerradas  = []
-        forzadas  = []
+        abiertas = []
+        cerradas = []
+        forzadas = []
 
         # 1. Cierre forzado 16:50
         if self.debe_cerrar_forzado(ahora):
             forzadas = self.cerrar_todas(precios_ars, "CIERRE_FORZADO")
             return {"abiertas": [], "cerradas": [], "forzadas": forzadas}
 
-        # 2. Actualizar precios y PnL de posiciones abiertas
+        # 2. Actualizar precios, PnL y pico máximo de cada posición abierta
         for sym, poss in self.posiciones.items():
             precio = precios_ars.get(sym, 0)
             for pos in poss:
                 pos.precio_actual = precio
-                pos.pnl = (precio - pos.precio_entry) * pos.cantidad
+                pos.pnl     = (precio - pos.precio_entry) * pos.cantidad
+                pos.pnl_pct = ((precio / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
+                # Actualizar pico solo si mejora — nunca retroceder
+                if pos.pnl_pct > pos.pnl_max_pct:
+                    pos.pnl_max_pct = pos.pnl_pct
 
-        # 3. Cerrar posiciones con señal contraria (desvío > +0.5%)
-        #    El clima NO interviene en las salidas — salir siempre que el
-        #    spread revierta, independientemente del régimen USD.
+        # 3. Evaluar condiciones de salida para posiciones abiertas
         for symbol in list(self.posiciones.keys()):
             if not self.posiciones[symbol]:
                 continue
@@ -284,15 +308,22 @@ class Simulador:
                 continue
             dev    = (ccl / ccl_avg - 1) * 100
             precio = precios_ars.get(symbol, 0)
+            if precio <= 0:
+                continue
 
-            if dev > 0.5 and precio > 0:
-                for pos in list(self.posiciones[symbol]):
-                    op = self.cerrar_posicion(symbol, pos, precio, "SEÑAL_CONTRARIA")
+            for pos in list(self.posiciones[symbol]):
+                motivo = self._evaluar_salida(pos, dev)
+                if motivo:
+                    op = self.cerrar_posicion(symbol, pos, precio, motivo)
                     cerradas.append(op)
-                self.posiciones[symbol] = []
 
-        # 4. Abrir posiciones:
-        #    desvío bajo (spread favorable) AND clima BULL (momentum USD alcista)
+            # Remover las posiciones cerradas
+            ids_cerradas = {op.id for op in cerradas}
+            self.posiciones[symbol] = [
+                p for p in self.posiciones[symbol] if p.id not in ids_cerradas
+            ]
+
+        # 4. Abrir posiciones: desvío bajo AND clima BULL
         if self.puede_comprar(ahora):
             for symbol, ccl in ccl_map.items():
                 if ccl_avg == 0:
@@ -301,7 +332,7 @@ class Simulador:
                 clima  = climas.get(symbol, "🔴 BEAR")
                 precio = precios_ars.get(symbol, 0)
 
-                if dev < -0.5 and clima == "🟢 BULL" and precio > 0:
+                if dev < UMBRAL_COMPRA and clima == "🟢 BULL" and precio > 0:
                     pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
                         abiertas.append(pos)
@@ -315,9 +346,8 @@ class Simulador:
         pnl_total = cap_total - self.capital_inicial
         pnl_pct   = (pnl_total / self.capital_inicial) * 100
 
-        ops_cerradas  = [o for o in self.operaciones]
-        ops_ganadoras = [o for o in ops_cerradas if o.pnl > 0]
-        win_rate      = (len(ops_ganadoras) / len(ops_cerradas) * 100) if ops_cerradas else 0
+        ops_ganadoras = [o for o in self.operaciones if o.pnl > 0]
+        win_rate      = (len(ops_ganadoras) / len(self.operaciones) * 100) if self.operaciones else 0
 
         return {
             "capital_inicial":       self.capital_inicial,
@@ -326,14 +356,13 @@ class Simulador:
             "capital_total":         cap_total,
             "pnl_total":             pnl_total,
             "pnl_pct":               pnl_pct,
-            "operaciones_total":     len(ops_cerradas),
+            "operaciones_total":     len(self.operaciones),
             "operaciones_ganadoras": len(ops_ganadoras),
             "win_rate":              win_rate,
             "posiciones_abiertas":   sum(len(v) for v in self.posiciones.values()),
         }
 
     def fila_sheets_operacion(self, op: Operacion) -> list:
-        """Convierte una operación a fila para Google Sheets."""
         return [
             op.id, op.symbol, op.tipo,
             round(op.cantidad, 4),
@@ -348,7 +377,6 @@ class Simulador:
         ]
 
     def fila_sheets_estado(self, precios_ars: Dict[str, float]) -> list:
-        """Guarda snapshot del estado de la cartera."""
         r = self.resumen(precios_ars)
         return [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -360,5 +388,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-          ]
-          
+      ]
+      
