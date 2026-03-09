@@ -18,6 +18,11 @@ MODELO DE CLIMA (Simons):
   Señal de compra = spread CCL favorable  AND  régimen bull en USD
   Señal de venta  = spread CCL desfavorable  (HMM no interviene)
 
+HISTORIAL HMM:
+  El historial de precios USD se persiste en Google Sheets (HMM_Historial)
+  con un rolling window de 500 snapshots (~1.5 días de trading a 60s/ciclo).
+  Esto garantiza que el HMM arranque con historia aunque la app se reinicie.
+
 PENDIENTE (dinero real):
 - Lógica de órdenes IOL (compra/venta)
 - Manejo de puntas y precio límite
@@ -59,6 +64,9 @@ REFRESH_SECONDS  = 60
 HORA_APERTURA    = dtime(10, 30)
 HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
+
+# Rolling window del historial en memoria (consistente con HMM_Historial en Sheets)
+HMM_MAX_SNAPSHOTS = 500
 
 PARES = {
     "GGAL":  ("GGAL",   10), "YPFD":  ("YPF",    1),
@@ -114,7 +122,8 @@ def init_state():
 def clima_hmm(sym, historial):
     """
     Retorna 🟢 si el subyacente USD está en régimen bull, 🔴 si no.
-    Usa log-returns del precio USD acumulados en el historial de la sesión.
+    Usa log-returns del precio USD acumulados en el historial de la sesión
+    (persistido en Sheets → sobrevive reinicios de la app).
     Requiere mínimo 5 snapshots con precio USD disponible.
     """
     sym_usd = PARES[sym][0]  # mapear CEDEAR → ticker USD (ej: YPFD → YPF)
@@ -232,9 +241,14 @@ def main():
 
     if ccl_map:
         # Guardar CCL + precios USD en el snapshot para que el HMM
-        # tenga histórico de log-returns USD (modelo Simons)
+        # tenga histórico de log-returns USD (modelo Simons).
+        # Rolling window: mantener solo los últimos HMM_MAX_SNAPSHOTS en memoria.
         historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg, "usd": p_usd})
-        sheets.guardar_snapshot_ccl(ccl_map, ccl_avg)
+        if len(historial) > HMM_MAX_SNAPSHOTS:
+            historial[:] = historial[-HMM_MAX_SNAPSHOTS:]
+
+        # Persistir en Sheets — p_usd se guarda en HMM_Historial (rolling)
+        sheets.guardar_snapshot_ccl(ccl_map, ccl_avg, p_usd=p_usd)
 
     # ── Señales y climas ───────────────────────────────────
     rows, señales_alerta, climas = [], [], {}
@@ -441,4 +455,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-      
