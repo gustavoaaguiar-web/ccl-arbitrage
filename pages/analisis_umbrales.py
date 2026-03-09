@@ -38,7 +38,8 @@ def conectar_sheets():
         return None
 
 @st.cache_data(ttl=300)
-def cargar_desvios():
+def cargar_precios():
+    """Devuelve los precios CCL crudos (sin calcular desvíos todavía)."""
     sh = conectar_sheets()
     if not sh:
         return None, None
@@ -50,24 +51,28 @@ def cargar_desvios():
         return None, None
     df = pd.DataFrame(filas[1:], columns=filas[0])
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    ccl_cols = df.columns[2:]
+    ccl_cols = [c for c in df.columns[2:] if c != "timestamp"]
     for col in ccl_cols:
         df[col] = pd.to_numeric(df[col].str.replace(",", "."), errors="coerce")
     df = df.dropna(subset=ccl_cols, how="all")
-    mediana = df[ccl_cols].median(axis=1)
-    desvios = (df[ccl_cols].div(mediana, axis=0) - 1) * 100
-    desvios["timestamp"] = df["timestamp"].values
-    return desvios, ccl_cols.tolist()
+    return df, ccl_cols
+
+def calcular_desvios(df_precios, cols):
+    """Calcula desvíos usando la mediana de las columnas indicadas (grupo propio)."""
+    mediana = df_precios[cols].median(axis=1)
+    desvios = (df_precios[cols].div(mediana, axis=0) - 1) * 100
+    desvios["timestamp"] = df_precios["timestamp"].values
+    return desvios
 
 # ── Cargar datos ──────────────────────────────────────────
 with st.spinner("Cargando historial desde Sheets..."):
-    desvios, ccl_cols = cargar_desvios()
+    df_precios, ccl_cols = cargar_precios()
 
-if desvios is None:
+if df_precios is None:
     st.warning("⏳ Insuficientes snapshots. Volvé después de algunas horas de operación.")
     st.stop()
 
-n_snapshots = len(desvios)
+n_snapshots = len(df_precios)
 st.success(f"✅ {n_snapshots} snapshots cargados")
 
 if st.button("🔄 Actualizar datos"):
@@ -95,7 +100,10 @@ else:
     cols_analisis = ccl_cols
     label_grupo   = "Todos los activos"
 
-st.caption(f"📌 {label_grupo}")
+# CLAVE: mediana calculada solo con columnas del grupo → desvíos internamente consistentes
+desvios = calcular_desvios(df_precios, cols_analisis)
+
+st.caption(f"📌 {label_grupo} — mediana calculada dentro del grupo")
 st.divider()
 
 # ── Estadísticas generales ────────────────────────────────
@@ -121,12 +129,13 @@ fig_hist.add_trace(go.Histogram(
     marker_color="#4A90D9", opacity=0.8, name=grupo,
 ))
 
-# Si es "Todos", superponer líquidos en verde para ver la diferencia
+# Si es "Todos", superponer líquidos con su propia mediana para comparar
 if grupo == "Todos" and cols_liq:
+    desvios_liq = calcular_desvios(df_precios, cols_liq)
     fig_hist.add_trace(go.Histogram(
-        x=desvios[cols_liq].stack().dropna(),
+        x=desvios_liq[cols_liq].stack().dropna(),
         nbinsx=80, marker_color="#00C851", opacity=0.5,
-        name="Líquidos (overlay)",
+        name="Líquidos (mediana propia)",
     ))
     fig_hist.update_layout(barmode="overlay")
 
