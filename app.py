@@ -1,4 +1,3 @@
-
 """
 CCL Arbitrage - App Streamlit Completa
 =======================================
@@ -123,7 +122,7 @@ def init_state():
 # Cache en session_state["hmm_barras"] — se refresca cada 30 minutos.
 
 HMM_BARRAS_REFRESH_MIN = 30   # refrescar barras cada N minutos
-HMM_BARRAS_LOOKBACK    = 60   # cantidad de barras 4H a pedir (~15 dias)
+HMM_BARRAS_LOOKBACK    = 200  # cantidad de barras 4H a pedir (~120 dias)
 
 def _fetch_barras_4h():
     """
