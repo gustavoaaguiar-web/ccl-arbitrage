@@ -38,10 +38,10 @@ LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI"]
 ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST"]
 
 TIMEFRAMES = {
-    "1H":  {"tf": "1Hour",  "dias": 30,  "label": "1 hora"},
-    "2H":  {"tf": "2Hour",  "dias": 45,  "label": "2 horas"},
-    "4H":  {"tf": "4Hour",  "dias": 60,  "label": "4 horas"},
-    "1D":  {"tf": "1Day",   "dias": 120, "label": "Diaria"},
+    "1H":  {"tf": "1Hour",  "dias": 120, "label": "1 hora"},
+    "2H":  {"tf": "2Hour",  "dias": 120, "label": "2 horas"},
+    "4H":  {"tf": "4Hour",  "dias": 120, "label": "4 horas"},
+    "1D":  {"tf": "1Day",   "dias": 365, "label": "Diaria"},
 }
 
 # ── Auth ──────────────────────────────────────────────────
