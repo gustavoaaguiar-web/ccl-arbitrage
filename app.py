@@ -272,7 +272,7 @@ def main():
         if dev <= -0.5 and clima == "🟢":
             accion = "🚀 COMPRA"
         elif dev >= 0.1:
-            accion = "🪙 VENTA"
+            accion = "🔴 VENTA"
         else:
             accion = "⏳ ESPERAR"
 
@@ -356,7 +356,7 @@ def main():
     rows_sorted = sorted(rows, key=lambda x: x["dev"])
     colors = [
         "#00C851" if r["accion"] == "🚀 COMPRA"
-        else "#FF4444" if r["accion"] == "🪙 VENTA"
+        else "#FF4444" if r["accion"] == "🔴 VENTA"
         else "#888"
         for r in rows_sorted
     ]
@@ -465,4 +465,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-      
