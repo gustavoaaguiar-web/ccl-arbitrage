@@ -257,23 +257,33 @@ def main():
         clima = clima_hmm(sym, historial)
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
-        # FIX: señal visible consistente con lo que ejecuta el simulador.
-        # Compra solo si desvío bajo Y clima BULL — igual que procesar_ciclo().
-        # Venta solo por desvío, sin filtro HMM — igual que procesar_ciclo().
-        if dev < -0.5 and clima == "🟢":
-            señal = "🟢 COMPRAR"
-        elif dev > 0.5:
-            señal = "🔴 VENDER"
+        # Desvío CCL — verde si ≤ -0.5% independientemente del clima
+        if dev <= -0.5:
+            desvio_color = "🟢"
+        elif dev >= 0.1:
+            desvio_color = "🔴"
         else:
-            señal = "🟡 NEUTRAL"
+            desvio_color = "🟡"
+
+        # Acción — combina desvío + clima
+        # 🚀 COMPRA: spread favorable Y clima BULL (lo que ejecuta el simulador)
+        # 🪙 VENTA:  spread revertido (desvío ≥ +0.10%) — solo aplica si hay posición abierta
+        # ⏳ ESPERAR: cualquier otro caso
+        if dev <= -0.5 and clima == "🟢":
+            accion = "🚀 COMPRA"
+        elif dev >= 0.1:
+            accion = "🪙 VENTA"
+        else:
+            accion = "⏳ ESPERAR"
 
         rows.append({
             "sym": sym, "ccl": ccl, "dev": dev, "clima": clima,
-            "señal": señal, "p_ars": p_ars.get(sym, 0),
+            "desvio_color": desvio_color, "accion": accion,
+            "p_ars": p_ars.get(sym, 0),
             "p_usd": p_usd.get(PARES[sym][0], 0),
         })
-        if señal != "🟡 NEUTRAL":
-            señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": señal})
+        if accion != "⏳ ESPERAR":
+            señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
 
     # ── Simulador ──────────────────────────────────────────
     if HORA_APERTURA <= ahora:
@@ -345,8 +355,8 @@ def main():
     # ── Gráfico ────────────────────────────────────────────
     rows_sorted = sorted(rows, key=lambda x: x["dev"])
     colors = [
-        "#00C851" if r["señal"] == "🟢 COMPRAR"
-        else "#FF4444" if r["señal"] == "🔴 VENDER"
+        "#00C851" if r["accion"] == "🚀 COMPRA"
+        else "#FF4444" if r["accion"] == "🪙 VENTA"
         else "#888"
         for r in rows_sorted
     ]
@@ -373,9 +383,9 @@ def main():
         "P. ARS": f"${r['p_ars']:,.1f}",
         "P. USD": f"${r['p_usd']:.3f}",
         "CCL":    f"${r['ccl']:,.2f}",
-        "Desvío": f"{r['dev']:+.2f}%",
+        "Desvío": f"{r['desvio_color']} {r['dev']:+.2f}%",
         "Clima":  r["clima"],
-        "Señal":  r["señal"],
+        "Acción": r["accion"],
     } for r in rows_sorted])
     st.dataframe(df, use_container_width=True, hide_index=True)
 
@@ -455,3 +465,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+      
