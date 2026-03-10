@@ -8,11 +8,12 @@ Simulador de Arbitraje CCL
 - Cierre nuevas compras: 16:30 hs
 - Cierre forzado: 16:50 hs
 
-CONDICIONES DE SALIDA (cualquiera activa el cierre):
-  +0.50%  desvío CCL          → señal contraria original
-  +0.20%  desvío CCL          → [A] salida anticipada del spread
-  dev alguna vez ≥0%  Y  caída PnL≥0.15% desde pico → [B] trailing (dev histórico)
-  PnL precio ≤ -0.66%         → [C] stop loss duro sobre precio de compra
+CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
+  [C] PnL precio ≤ -0.80%                          → stop loss duro
+  [A] desvío CCL ≥ +0.10%                          → reversión completa del spread
+  [B] dev alguna vez ≥ 0%  AND  pnl_max ≥ +0.30%
+      AND  caída desde pico ≥ 0.25%                → trailing con ganancia confirmada
+  [D] PnL precio ≥ +2.40%                          → take profit puro
 
 MODELO DE CLIMA (Simons):
   El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
@@ -45,11 +46,12 @@ MAX_POSICIONES_POR_ESPECIE = 2
 UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_ORIGINAL = 0.50   # desvío CCL — señal contraria clásica (%)
-UMBRAL_VENTA_A        = 0.20   # desvío CCL — [A] salida anticipada (%)
-UMBRAL_VENTA_B_DEV    = 0.00   # desvío CCL — [B] spread neutralizado (%)
-UMBRAL_VENTA_B_CAIDA  = 0.15   # caída desde pico PnL% para activar trailing (%)
-STOP_LOSS_C           = -0.66  # variación precio sobre precio de compra (pnl_pct %)
+UMBRAL_VENTA_A          = 0.10   # desvío CCL — [A] reversión completa del spread (%)
+UMBRAL_VENTA_B_DEV      = 0.00   # desvío CCL histórico — [B] spread alguna vez neutro (%)
+UMBRAL_VENTA_B_PNL_MIN  = 0.30   # PnL % mínimo alcanzado para habilitar trailing B (%)
+UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
+TAKE_PROFIT_D           = 2.40   # PnL precio — [D] take profit puro (%)
+STOP_LOSS_C             = -0.80  # PnL precio — [C] stop loss duro (%)
 
 
 @dataclass
@@ -88,7 +90,7 @@ class Operacion:
     pnl_pct:       float
     ts_entry:      str
     ts_exit:       str
-    motivo_cierre: str   # SEÑAL_CONTRARIA / SALIDA_A / SALIDA_B / STOP_LOSS_C /
+    motivo_cierre: str   # SALIDA_A / SALIDA_B / TAKE_PROFIT_D / STOP_LOSS_C /
                          # CIERRE_FORZADO / VENTA_MANUAL
 
 
@@ -150,11 +152,17 @@ class Simulador:
         """
         Evalúa si una posición debe cerrarse. Retorna el motivo o None.
 
-        Orden de prioridad (de más a menos urgente):
-          1. [C] Stop loss duro
-          2. [+0.5%] Señal contraria original
-          3. [A] Salida anticipada del spread
-          4. [B] Trailing desde pico con spread neutro
+        Orden de prioridad:
+          1. [C] Stop loss duro         → pnl_pct ≤ -0.80%
+          2. [A] Reversión del spread   → dev ≥ +0.10%
+          3. [B] Trailing confirmado    → dev_max ≥ 0%  AND  pnl_max ≥ +0.30%
+                                          AND  caída desde pico ≥ 0.25%
+          4. [D] Take profit puro       → pnl_pct ≥ +2.40%
+
+        Todos los flags históricos (dev_max_alcanzado, pnl_max_pct) se
+        actualizan en procesar_ciclo() antes de llamar a este método,
+        por lo que las condiciones B no requieren que los eventos coincidan
+        en el mismo ciclo de 60s.
         """
         pnl_pct = pos.pnl_pct
 
@@ -162,23 +170,23 @@ class Simulador:
         if pnl_pct <= STOP_LOSS_C:
             return "STOP_LOSS_C"
 
-        # Señal contraria original
-        if dev >= UMBRAL_VENTA_ORIGINAL:
-            return "SEÑAL_CONTRARIA"
-
-        # [A] Salida anticipada del spread
+        # [A] Reversión completa del spread
         if dev >= UMBRAL_VENTA_A:
             return "SALIDA_A"
 
-        # [B] Trailing desde pico:
-        #   El spread alguna vez llegó a ≥0% (dev_max_alcanzado lo registra)
-        #   Y el PnL cayó ≥0.15% desde su máximo.
-        #   La condición NO requiere que dev >= 0% ahora — evita el bug de
-        #   que dev y caída nunca coincidan en el mismo ciclo de 60s.
-        if pos.dev_max_alcanzado >= UMBRAL_VENTA_B_DEV:
+        # [B] Trailing con ganancia confirmada:
+        #   - El spread alguna vez se neutralizó (dev_max_alcanzado ≥ 0%)
+        #   - El precio llegó a ganar al menos +0.30% en algún momento
+        #   - Desde ese pico el precio cayó ≥ 0.25%
+        if (pos.dev_max_alcanzado >= UMBRAL_VENTA_B_DEV
+                and pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN):
             caida_desde_pico = pos.pnl_max_pct - pnl_pct
             if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
                 return "SALIDA_B"
+
+        # [D] Take profit puro — independiente del desvío CCL
+        if pnl_pct >= TAKE_PROFIT_D:
+            return "TAKE_PROFIT_D"
 
         return None
 
@@ -400,5 +408,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-]
+      ]
       
