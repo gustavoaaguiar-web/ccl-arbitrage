@@ -115,27 +115,53 @@ def init_state():
         st.session_state.ready    = True
     return True
 
-# ── HMM — MODELO SIMONS ───────────────────────────────────
-# Entrena sobre log-returns del precio USD del subyacente (no niveles CCL).
-# Esto hace al clima ortogonal a la señal CCL → menor redundancia,
-# mayor calidad de filtrado. Mismo modelo que Simons v14.6.
-def clima_hmm(sym, historial):
+# ── HMM — MODELO SIMONS (barras 4H) ──────────────────────
+# Entrena sobre log-returns de barras 4H del precio USD del subyacente.
+# Las barras 4H tienen suficiente señal para distinguir regímenes bull/bear,
+# a diferencia de los snapshots de 60s que son esencialmente ruido blanco.
+# Cache en session_state["hmm_barras"] — se refresca cada 30 minutos.
+
+HMM_BARRAS_REFRESH_MIN = 30   # refrescar barras cada N minutos
+HMM_BARRAS_LOOKBACK    = 60   # cantidad de barras 4H a pedir (~15 dias)
+
+def _fetch_barras_4h():
     """
-    Retorna 🟢 si el subyacente USD está en régimen bull, 🔴 si no.
-    Usa log-returns del precio USD acumulados en el historial de la sesión
-    (persistido en Sheets → sobrevive reinicios de la app).
-    Requiere mínimo 5 snapshots con precio USD disponible.
+    Descarga barras 4H via AlpacaClient para todos los simbolos USD en PARES.
+    Retorna dict {sym_usd: [close, close, ...]} o {} si falla.
     """
-    sym_usd = PARES[sym][0]  # mapear CEDEAR → ticker USD (ej: YPFD → YPF)
-    precios = [h["usd"].get(sym_usd) for h in historial if h.get("usd", {}).get(sym_usd)]
+    alpaca   = st.session_state.get("alpaca")
+    if not alpaca:
+        return {}
+    syms_usd = list({v[0] for v in PARES.values()})
+    return alpaca.get_bars(syms_usd, timeframe="4Hour", limit=HMM_BARRAS_LOOKBACK)
+
+def _refrescar_barras_si_necesario():
+    """Refresca el cache de barras 4H si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
+    ahora  = hora_argentina()
+    ultimo = st.session_state.get("hmm_barras_ts")
+    if ultimo is None or (ahora - ultimo).seconds >= HMM_BARRAS_REFRESH_MIN * 60:
+        barras = _fetch_barras_4h()
+        if barras:
+            st.session_state["hmm_barras"]    = barras
+            st.session_state["hmm_barras_ts"] = ahora
+            logger.info(f"HMM 4H: barras actualizadas para {list(barras.keys())}")
+
+def clima_hmm(sym, historial=None):
+    """
+    Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
+    Usa barras 4H de Alpaca (cache de 30 min).
+    """
+    sym_usd = PARES[sym][0]
+    barras  = st.session_state.get("hmm_barras", {})
+    precios = barras.get(sym_usd, [])
     if len(precios) < 5:
-        return "🔴"  # insuficiente historia → conservador
+        return "🔴"
     try:
         from hmmlearn.hmm import GaussianHMM
-        ret = np.diff(np.log(precios)).reshape(-1, 1)  # log-returns, estacionarios
-        m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
+        ret    = np.diff(np.log(precios)).reshape(-1, 1)
+        m      = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
         estado = m.predict(ret)[-1]
-        bull   = np.argmax(m.means_.flatten())  # estado con mayor media = bull
+        bull   = np.argmax(m.means_.flatten())
         return "🟢" if estado == bull else "🔴"
     except:
         return "🔴"
@@ -233,6 +259,9 @@ def main():
     historial = st.session_state.historial
     hora      = hora_argentina()
     ahora     = hora.time()
+
+    # Refrescar barras 4H para HMM (cada 30 min, no cada 60s)
+    _refrescar_barras_si_necesario()
 
     ts_key = str(int(time.time() // REFRESH_SECONDS))
     p_ars, p_usd = fetch_precios(ts_key)
@@ -456,13 +485,3 @@ def main():
             sheets.guardar_estado_simulador(sim_nuevo)
             st.session_state.sim = sim_nuevo
             st.success("✅ Simulador reseteado")
-            st.rerun()
-
-    st.caption(f"⏱ Próxima actualización en {REFRESH_SECONDS}s")
-    time.sleep(REFRESH_SECONDS)
-    st.rerun()
-
-
-if __name__ == "__main__":
-    main()
-      
