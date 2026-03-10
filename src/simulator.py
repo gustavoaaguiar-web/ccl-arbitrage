@@ -11,7 +11,7 @@ Simulador de Arbitraje CCL
 CONDICIONES DE SALIDA (cualquiera activa el cierre):
   +0.50%  desvío CCL          → señal contraria original
   +0.20%  desvío CCL          → [A] salida anticipada del spread
-  dev≥0%  Y  caída PnL≥0.15% → [B] trailing desde pico (spread neutro + deterioro)
+  dev alguna vez ≥0%  Y  caída PnL≥0.15% desde pico → [B] trailing (dev histórico)
   PnL precio ≤ -0.66%         → [C] stop loss duro sobre precio de compra
 
 MODELO DE CLIMA (Simons):
@@ -66,7 +66,11 @@ class Posicion:
     precio_actual: float = 0.0
     pnl:           float = 0.0
     pnl_pct:       float = 0.0   # PnL % actual
-    pnl_max_pct:   float = 0.0   # pico máximo de PnL % alcanzado (para condición B)
+    pnl_max_pct:        float = 0.0    # pico máximo de PnL % (para trailing B)
+    dev_max_alcanzado:  float = -99.0  # pico de desvío CCL alcanzado;
+                                       # una vez que llega a ≥0% queda registrado
+                                       # y el trailing B se activa aunque el dev
+                                       # vuelva negativo en el ciclo siguiente
 
 
 @dataclass
@@ -166,8 +170,12 @@ class Simulador:
         if dev >= UMBRAL_VENTA_A:
             return "SALIDA_A"
 
-        # [B] Spread neutralizado + caída desde pico
-        if dev >= UMBRAL_VENTA_B_DEV:
+        # [B] Trailing desde pico:
+        #   El spread alguna vez llegó a ≥0% (dev_max_alcanzado lo registra)
+        #   Y el PnL cayó ≥0.15% desde su máximo.
+        #   La condición NO requiere que dev >= 0% ahora — evita el bug de
+        #   que dev y caída nunca coincidan en el mismo ciclo de 60s.
+        if pos.dev_max_alcanzado >= UMBRAL_VENTA_B_DEV:
             caida_desde_pico = pos.pnl_max_pct - pnl_pct
             if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
                 return "SALIDA_B"
@@ -213,6 +221,7 @@ class Simulador:
             precio_actual=precio_ars,
             pnl_pct=0.0,
             pnl_max_pct=0.0,
+            dev_max_alcanzado=-99.0,
         )
 
         self.efectivo -= monto
@@ -295,7 +304,7 @@ class Simulador:
                 pos.precio_actual = precio
                 pos.pnl     = (precio - pos.precio_entry) * pos.cantidad
                 pos.pnl_pct = ((precio / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
-                # Actualizar pico solo si mejora — nunca retroceder
+                # Actualizar pico de PnL — nunca retroceder
                 if pos.pnl_pct > pos.pnl_max_pct:
                     pos.pnl_max_pct = pos.pnl_pct
 
@@ -312,6 +321,9 @@ class Simulador:
                 continue
 
             for pos in list(self.posiciones[symbol]):
+                # Actualizar pico de desvío — nunca retroceder
+                if dev > pos.dev_max_alcanzado:
+                    pos.dev_max_alcanzado = dev
                 motivo = self._evaluar_salida(pos, dev)
                 if motivo:
                     op = self.cerrar_posicion(symbol, pos, precio, motivo)
@@ -388,4 +400,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-        ]
+]
+      
