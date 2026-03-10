@@ -1,3 +1,4 @@
+
 """
 CCL Arbitrage - App Streamlit Completa
 =======================================
@@ -485,3 +486,12 @@ def main():
             sheets.guardar_estado_simulador(sim_nuevo)
             st.session_state.sim = sim_nuevo
             st.success("✅ Simulador reseteado")
+            st.rerun()
+
+    st.caption(f"⏱ Próxima actualización en {REFRESH_SECONDS}s")
+    time.sleep(REFRESH_SECONDS)
+    st.rerun()
+
+
+if __name__ == "__main__":
+    main()
