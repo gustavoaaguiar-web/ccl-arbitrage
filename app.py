@@ -367,8 +367,8 @@ def main():
         text=[f"{r['dev']:+.2f}%" for r in rows_sorted],
         textposition="outside",
     ))
-    fig.add_hline(y=0.5,  line_dash="dash", line_color="#FF4444")
-    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851")
+    fig.add_hline(y=0.1,  line_dash="dash", line_color="#FF4444", annotation_text="+0.10%")
+    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.50%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
@@ -465,3 +465,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+      
