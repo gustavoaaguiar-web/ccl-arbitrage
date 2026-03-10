@@ -8,6 +8,7 @@ import logging
 import threading
 from typing import Callable, Dict, Optional
 import requests
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,34 @@ class AlpacaClient:
 
     def stop_stream(self):
         self._running = False
+
+    def get_bars(self, symbols: list, timeframe: str = "4Hour", limit: int = 60) -> Dict[str, list]:
+        """
+        Descarga barras OHLCV para una lista de simbolos.
+        Retorna dict {sym: [close, close, ...]} con los ultimos `limit` cierres.
+        Usado por el HMM para entrenarse sobre log-returns de barras 4H.
+        """
+        from datetime import timezone, timedelta
+        start = (datetime.now(timezone.utc) - timedelta(days=35)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            resp = requests.get(
+                f"{ALPACA_BASE_URL}/stocks/bars",
+                headers=self.headers,
+                params={
+                    "symbols":   ",".join(symbols),
+                    "timeframe": timeframe,
+                    "start":     start,
+                    "limit":     limit,
+                    "feed":      "iex",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("bars", {})
+            return {sym: [b["c"] for b in bars] for sym, bars in data.items() if len(bars) >= 5}
+        except requests.RequestException as e:
+            logger.error(f"Error Alpaca bars ({timeframe}): {e}")
+            return {}
 
     def test_connection(self) -> dict:
         """Prueba conexión Alpaca y retorna sample de GGAL."""
