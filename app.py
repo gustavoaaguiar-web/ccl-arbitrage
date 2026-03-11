@@ -122,7 +122,7 @@ def init_state():
 # Cache en session_state["hmm_barras"] — se refresca cada 30 minutos.
 
 HMM_BARRAS_REFRESH_MIN = 30   # refrescar barras cada N minutos
-HMM_BARRAS_LOOKBACK    = 200  # cantidad de barras 4H a pedir (~120 dias)
+HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
 def _fetch_barras_4h():
     """
@@ -133,7 +133,7 @@ def _fetch_barras_4h():
     if not alpaca:
         return {}
     syms_usd = list({v[0] for v in PARES.values()})
-    return alpaca.get_bars(syms_usd, timeframe="4Hour", limit=HMM_BARRAS_LOOKBACK)
+    return alpaca.get_bars(syms_usd, timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
 
 def _refrescar_barras_si_necesario():
     """Refresca el cache de barras 4H si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
@@ -485,12 +485,4 @@ def main():
             sheets.guardar_estado_simulador(sim_nuevo)
             st.session_state.sim = sim_nuevo
             st.success("✅ Simulador reseteado")
-            st.rerun()
-
-    st.caption(f"⏱ Próxima actualización en {REFRESH_SECONDS}s")
-    time.sleep(REFRESH_SECONDS)
-    st.rerun()
-
-
-if __name__ == "__main__":
-    main()
+  
