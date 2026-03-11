@@ -443,4 +443,3 @@ st.info(
 )
 
 st.caption("HMM_BARRAS_REFRESH_MIN en app.py controla cada cuánto se actualiza el clima en producción.")
-      
