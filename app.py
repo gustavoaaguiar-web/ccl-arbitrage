@@ -311,8 +311,12 @@ def main():
             "p_ars": p_ars.get(sym, 0),
             "p_usd": p_usd.get(PARES[sym][0], 0),
         })
-        if accion != "⏳ ESPERAR":
+        # Alertas: COMPRA siempre, VENTA solo si hay posición abierta en ese símbolo
+        if accion == "🚀 COMPRA":
             señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
+        elif accion == "🔴 VENTA":
+            if sim.posiciones_abiertas_count(sym) > 0:
+                señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
 
     # ── Simulador ──────────────────────────────────────────
     if HORA_APERTURA <= ahora:
