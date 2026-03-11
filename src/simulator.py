@@ -170,8 +170,9 @@ class Simulador:
         if pnl_pct <= STOP_LOSS_C:
             return "STOP_LOSS_C"
 
-        # [A] Reversión completa del spread
-        if dev >= UMBRAL_VENTA_A:
+        # [A] Reversión completa del spread — solo si la operación está en ganancia
+        # Evita cerrar con pérdida por una reversión del spread sin ganancia de precio
+        if dev >= UMBRAL_VENTA_A and pnl_pct > 0:
             return "SALIDA_A"
 
         # [B] Trailing con ganancia confirmada:
@@ -408,5 +409,4 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-      ]
-      
+        ]
