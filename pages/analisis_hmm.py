@@ -267,14 +267,15 @@ resumen = df_res.groupby("Frecuencia").agg(
     Pct_BULL     = ("% BULL",       "mean"),
 ).round(4).reset_index()
 
-# Ordenar por separación (métrica clave)
-resumen = resumen.sort_values("Separacion", ascending=False).reset_index(drop=True)
+# Ordenar por Sharpe BULL — métrica correcta para estrategias long-only
+# (separación Bull-Bear es útil para long/short, no para long-only)
+resumen = resumen.sort_values("Sharpe", ascending=False).reset_index(drop=True)
 resumen.index = resumen.index + 1  # ranking 1-based
 
 # Highlight mejor frecuencia
 mejor_tf = resumen.iloc[0]["Frecuencia"]
 st.success(f"🏆 Frecuencia recomendada: **{mejor_tf}** ({TIMEFRAMES[mejor_tf]['label']}) "
-           f"— mayor separación BULL/BEAR = {resumen.iloc[0]['Separacion']:.4f}%")
+           f"— mayor Sharpe BULL = {resumen.iloc[0]['Sharpe']:.3f} | Hit Rate = {resumen.iloc[0]['Hit_Rate']:.1f}%")
 
 # Métricas en columnas
 cols = st.columns(len(resumen))
@@ -282,15 +283,15 @@ for i, (_, row) in enumerate(resumen.iterrows()):
     with cols[i]:
         tf = row["Frecuencia"]
         emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"#{i+1}"
-        st.metric(f"{emoji} {tf}", f"Sep: {row['Separacion']:+.4f}%")
-        st.caption(f"Bull: {row['Media_BULL']:+.4f}% | Bear: {row['Media_BEAR']:+.4f}%\n"
-                   f"Hit: {row['Hit_Rate']:.1f}% | Sharpe: {row['Sharpe']:.3f}\n"
+        st.metric(f"{emoji} {tf}", f"Sharpe: {row['Sharpe']:.3f}")
+        st.caption(f"Bull: {row['Media_BULL']:+.4f}% | Hit: {row['Hit_Rate']:.1f}%\n"
+                   f"Bear: {row['Media_BEAR']:+.4f}% | Sep: {row['Separacion']:+.4f}%\n"
                    f"% tiempo BULL: {row['Pct_BULL']:.1f}%")
 
 # ── Gráfico: separación por frecuencia ────────────────────
 st.markdown("---")
-st.subheader("🔬 Separación BULL vs BEAR por Frecuencia")
-st.caption("Separación = Media(retorno BULL) − Media(retorno BEAR). Mayor = mejor filtro.")
+st.subheader("🔬 Sharpe BULL por Frecuencia")
+st.caption("Sharpe BULL = Media/σ de retornos en estado BULL. Métrica correcta para long-only (no long/short).")
 
 fig_sep = go.Figure()
 colores = {"1H": "#4FC3F7", "2H": "#81C784", "4H": "#FFB74D", "1D": "#F06292"}
@@ -298,17 +299,17 @@ for _, row in resumen.iterrows():
     tf = row["Frecuencia"]
     fig_sep.add_trace(go.Bar(
         x=[tf],
-        y=[row["Separacion"]],
+        y=[row["Sharpe"]],
         name=tf,
         marker_color=colores.get(tf, "#888"),
-        text=f"{row['Separacion']:+.4f}%",
+        text=f"{row['Sharpe']:.3f}",
         textposition="outside",
     ))
 fig_sep.update_layout(
     plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
     font_color="white", height=320,
     showlegend=False,
-    yaxis_title="Separación (%)",
+    yaxis_title="Sharpe BULL",
 )
 st.plotly_chart(fig_sep, use_container_width=True)
 
@@ -421,10 +422,10 @@ sep_val   = row_mejor["Separacion"]
 hr_val    = row_mejor["Hit_Rate"]
 sharpe_val = row_mejor["Sharpe"]
 
-if hr_val >= 55 and sep_val > 0.01:
+if hr_val >= 55 and sharpe_val > 0.05:
     calidad = "✅ Alta calidad"
     msg = "El filtro HMM agrega valor estadísticamente significativo."
-elif hr_val >= 52 or sep_val > 0.005:
+elif hr_val >= 52 or sharpe_val > 0.01:
     calidad = "⚠️ Calidad moderada"
     msg = "El HMM agrega algo de valor, pero la señal es débil. Considerar más datos."
 else:
@@ -442,3 +443,4 @@ st.info(
 )
 
 st.caption("HMM_BARRAS_REFRESH_MIN en app.py controla cada cuánto se actualiza el clima en producción.")
+      
