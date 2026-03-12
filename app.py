@@ -413,7 +413,7 @@ def main():
         textposition="outside",
     ))
     fig.add_hline(y=0.1,  line_dash="dash", line_color="#FF4444", annotation_text="+0.10%")
-    fig.add_hline(y=-0.6, line_dash="dash", line_color="#00C851", annotation_text="-0.60%")
+    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.60%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
@@ -475,13 +475,16 @@ def main():
 
     # ── Historial ops ──────────────────────────────────────
     with st.expander("📜 Historial de Operaciones"):
-        ops = sheets.cargar_operaciones()
-        if ops:
-            cols = ["ID","Activo","Tipo","Cant.","P.Entry","P.Exit",
-                    "M.Entry","M.Exit","PnL","PnL%","Apertura","Cierre","Motivo"]
-            st.dataframe(pd.DataFrame(ops, columns=cols), use_container_width=True, hide_index=True)
-        else:
-            st.info("Sin operaciones registradas aún.")
+        try:
+            ops = sheets.cargar_operaciones()
+            if ops:
+                cols = ["ID","Activo","Tipo","Cant.","P.Entry","P.Exit",
+                        "M.Entry","M.Exit","PnL","PnL%","Apertura","Cierre","Motivo"]
+                st.dataframe(pd.DataFrame(ops, columns=cols), use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin operaciones registradas aún.")
+        except Exception as e:
+            st.warning(f"⚠️ Error cargando historial (Sheets rate limit): {e}")
 
     # ── Sidebar ────────────────────────────────────────────
     with st.sidebar:
