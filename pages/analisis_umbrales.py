@@ -486,7 +486,6 @@ st.caption(
     "una Salida A en +0.15% captura la mayoría de operaciones pero deja ganancia sobre la mesa."
 )
 
-@st.cache_data(ttl=300)
 def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.6, ciclos_max=30):
     """
     Para cada entrada con dev < umbral, rastrea el pico máximo de PnL
@@ -521,9 +520,10 @@ def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.6, ciclos_max=30
             i += 1
     return pd.DataFrame(rows)
 
-df_picos = calcular_picos_ganancia(desvios, cols_analisis)
+try:
+    df_picos = calcular_picos_ganancia(desvios, cols_analisis)
+except Exception as e:
+    st.warning(f"Error calculando picos: {e}")
+    df_picos = pd.DataFrame()
 
-if df_picos.empty:
-    st.info("Sin datos suficientes para el análisis de picos.")
-else:
-    tot
+if df_picos
