@@ -526,4 +526,76 @@ except Exception as e:
     st.warning(f"Error calculando picos: {e}")
     df_picos = pd.DataFrame()
 
-if df_p
+if df_picos.empty:
+    st.info("Sin datos suficientes para el análisis de picos.")
+else:
+    total_entradas = len(df_picos)
+    pct_pos        = df_picos["llego_pos"].mean() * 100
+    pico_media     = df_picos["pico_pnl"].mean()
+    pico_p50       = df_picos["pico_pnl"].quantile(0.50)
+    pico_p75       = df_picos["pico_pnl"].quantile(0.75)
+    pico_p90       = df_picos["pico_pnl"].quantile(0.90)
+    pico_max       = df_picos["pico_pnl"].max()
+
+    # KPIs
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Entradas analizadas", total_entradas)
+    c2.metric("% llegaron a PnL > 0", f"{pct_pos:.1f}%")
+    c3.metric("Media pico",  f"+{pico_media:.3f}%")
+    c4.metric("p50 pico",    f"+{pico_p50:.3f}%")
+    c5.metric("p75 pico",    f"+{pico_p75:.3f}%")
+    c6.metric("p90 pico",    f"+{pico_p90:.3f}%")
+
+    # Histograma del pico de ganancia
+    fig_pk = go.Figure()
+    fig_pk.add_trace(go.Histogram(
+        x=df_picos["pico_pnl"],
+        nbinsx=60,
+        marker_color="#00C851",
+        opacity=0.8,
+        name="Pico PnL",
+    ))
+    # Líneas de referencia — umbrales candidatos de Salida A
+    for v, color, label in [
+        (0.10, "#FFD700",  "+0.10%"),
+        (0.15, "#FF8C00",  "+0.15% (actual)"),
+        (0.20, "#FF4444",  "+0.20%"),
+        (pico_p75, "#00BFFF", f"p75 ({pico_p75:.3f}%)"),
+    ]:
+        fig_pk.add_vline(
+            x=v, line_dash="dash", line_color=color,
+            annotation_text=label, annotation_position="top right",
+        )
+    fig_pk.update_layout(
+        title="Distribución del pico máximo de ganancia por operación",
+        xaxis_title="Pico PnL máximo alcanzado (%)",
+        yaxis_title="Frecuencia",
+        plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
+        font_color="white", height=360,
+    )
+    st.plotly_chart(fig_pk, use_container_width=True)
+
+    # Tabla por símbolo
+    with st.expander("📋 Ver picos por símbolo"):
+        picos_sym = df_picos.groupby("sym").agg(
+            entradas   = ("pico_pnl", "count"),
+            pct_pos    = ("llego_pos", lambda x: f"{x.mean()*100:.0f}%"),
+            media_pico = ("pico_pnl", "mean"),
+            p50_pico   = ("pico_pnl", lambda x: x.quantile(0.50)),
+            p75_pico   = ("pico_pnl", lambda x: x.quantile(0.75)),
+            p90_pico   = ("pico_pnl", lambda x: x.quantile(0.90)),
+            max_pico   = ("pico_pnl", "max"),
+        ).round(3).reset_index()
+        picos_sym.columns = ["Símbolo", "Entradas", "% PnL>0",
+                              "Media %", "p50 %", "p75 %", "p90 %", "Máx %"]
+        st.dataframe(picos_sym, use_container_width=True, hide_index=True)
+
+    # Interpretación automática
+    salida_a_actual = 1.00  # ahora es PnL precio, no desvío
+    pct_captura = (df_picos["pico_pnl"] >= salida_a_actual).mean() * 100
+    st.info(
+        f"📌 Salida A requiere dev ≥ +0.15% Y precio ≥ +1.00%. "
+        f"El **{pct_captura:.1f}%** de las entradas alcanza un pico ≥ +{salida_a_actual:.2f}% — "
+        f"las restantes quedan para Salida B (trailing) o cierre forzado."
+    )
+
