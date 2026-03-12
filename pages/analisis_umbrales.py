@@ -338,7 +338,7 @@ st.divider()
 st.subheader("💰 Rendimiento Simulado por Acción")
 st.caption(
     "Simula operaciones usando las reglas actuales: "
-    "compra si desvío < -0.5%, venta si desvío ≥ +0.10% con ganancia, "
+    "compra si desvío < -0.6%, venta si desvío ≥ +0.15% con ganancia, "
     "o cierre forzado a los 30 ciclos. "
     "El PnL se aproxima por el movimiento del desvío CCL (no precio real)."
 )
