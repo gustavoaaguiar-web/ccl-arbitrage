@@ -478,4 +478,35 @@ def main():
         ops = sheets.cargar_operaciones()
         if ops:
             cols = ["ID","Activo","Tipo","Cant.","P.Entry","P.Exit",
-                   
+                    "M.Entry","M.Exit","PnL","PnL%","Apertura","Cierre","Motivo"]
+            st.dataframe(pd.DataFrame(ops, columns=cols), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin operaciones registradas aún.")
+
+    # ── Sidebar ────────────────────────────────────────────
+    with st.sidebar:
+        st.title("⚙️ Config")
+        st.markdown(f"**Snapshots HMM:** {len(historial)}")
+        st.markdown(f"**Actualizado:** {hora.strftime('%H:%M:%S')}")
+        st.divider()
+        st.markdown("**Simulador**")
+        st.markdown(f"Capital inicial: $10.000.000")
+        st.markdown(f"Por operación: 15%")
+        st.markdown(f"Máx./especie: 2")
+        st.markdown(f"Ventana: 10:30 → 16:50")
+        st.divider()
+        if st.button("🔄 Reset simulador"):
+            sim_nuevo = Simulador()
+            sheets.guardar_posiciones(sim_nuevo)
+            sheets.guardar_estado_simulador(sim_nuevo)
+            st.session_state.sim = sim_nuevo
+            st.success("✅ Simulador reseteado")
+            st.rerun()
+
+    st.caption(f"⏱ Próxima actualización en {REFRESH_SECONDS}s")
+    time.sleep(REFRESH_SECONDS)
+    st.rerun()
+
+
+if __name__ == "__main__":
+    main()
