@@ -332,3 +332,146 @@ else:
     st.info("Necesitás más datos para una recomendación confiable. Volvé después de 1–2 días de trading.")
 
 st.caption("Los umbrales óptimos cambian con el régimen de mercado. Revisá semanalmente.")
+st.divider()
+
+# ── Rendimiento simulado por símbolo ─────────────────────
+st.subheader("💰 Rendimiento Simulado por Acción")
+st.caption(
+    "Simula operaciones usando las reglas actuales: "
+    "compra si desvío < -0.5%, venta si desvío ≥ +0.10% con ganancia, "
+    "o cierre forzado a los 30 ciclos. "
+    "El PnL se aproxima por el movimiento del desvío CCL (no precio real)."
+)
+
+UMBRAL_COMPRA_SIM = -0.5
+UMBRAL_VENTA_SIM  =  0.10
+CICLOS_MAX        = 30   # cierre forzado
+
+@st.cache_data(ttl=300)
+def simular_por_simbolo(desvios_df, cols):
+    resultados = []
+    for sym in cols:
+        serie = desvios_df[sym].dropna().values
+        n     = len(serie)
+        i     = 0
+        while i < n - 1:
+            # Buscar entrada
+            if serie[i] < UMBRAL_COMPRA_SIM:
+                dev_entrada = serie[i]
+                dev_pico    = dev_entrada
+                cerrado     = False
+                for j in range(1, CICLOS_MAX + 1):
+                    if i + j >= n:
+                        break
+                    dev_actual = serie[i + j]
+                    # Actualizar pico
+                    if dev_actual > dev_pico:
+                        dev_pico = dev_actual
+                    # Calcular PnL aproximado (reversión del spread)
+                    pnl_aprox = dev_actual - dev_entrada  # positivo si el spread cerró
+                    # Salida A: dev >= +0.10% Y pnl > 0
+                    if dev_actual >= UMBRAL_VENTA_SIM and pnl_aprox > 0:
+                        resultados.append({
+                            "sym":         sym,
+                            "dev_entrada": round(dev_entrada, 3),
+                            "dev_salida":  round(dev_actual, 3),
+                            "dev_pico":    round(dev_pico, 3),
+                            "pnl_pct":     round(pnl_aprox, 3),
+                            "ciclos":      j,
+                            "tipo_salida": "SALIDA_A",
+                        })
+                        i += j
+                        cerrado = True
+                        break
+                if not cerrado:
+                    # Cierre forzado al ciclo máximo
+                    j_final    = min(CICLOS_MAX, n - 1 - i)
+                    dev_salida = serie[i + j_final]
+                    pnl_aprox  = dev_salida - dev_entrada
+                    resultados.append({
+                        "sym":         sym,
+                        "dev_entrada": round(dev_entrada, 3),
+                        "dev_salida":  round(dev_salida, 3),
+                        "dev_pico":    round(dev_pico, 3),
+                        "pnl_pct":     round(pnl_aprox, 3),
+                        "ciclos":      j_final,
+                        "tipo_salida": "FORZADO",
+                    })
+                    i += j_final
+            i += 1
+    return pd.DataFrame(resultados)
+
+df_sim = simular_por_simbolo(desvios, cols_analisis)
+
+if df_sim.empty:
+    st.info("No hay suficientes operaciones simuladas con el umbral actual.")
+else:
+    # Resumen por símbolo
+    resumen_sim = df_sim.groupby("sym").agg(
+        n_ops       = ("pnl_pct", "count"),
+        pnl_prom    = ("pnl_pct", "mean"),
+        pnl_total   = ("pnl_pct", "sum"),
+        win_rate    = ("pnl_pct", lambda x: (x > 0).mean() * 100),
+        ciclos_prom = ("ciclos",  "mean"),
+        dev_pico    = ("dev_pico", "mean"),
+    ).round(3).reset_index()
+
+    resumen_sim = resumen_sim.sort_values("pnl_prom", ascending=False)
+
+    # KPIs globales
+    total_ops  = len(df_sim)
+    pnl_global = df_sim["pnl_pct"].mean()
+    wr_global  = (df_sim["pnl_pct"] > 0).mean() * 100
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Operaciones totales", total_ops)
+    c2.metric("PnL promedio global", f"{pnl_global:+.3f}%")
+    c3.metric("Win Rate global",     f"{wr_global:.1f}%")
+
+    # Gráfico de barras — PnL promedio por símbolo
+    colores_bar = ["#00C851" if v > 0 else "#FF4444"
+                   for v in resumen_sim["pnl_prom"]]
+    fig_pnl = go.Figure(go.Bar(
+        x=resumen_sim["sym"],
+        y=resumen_sim["pnl_prom"],
+        marker_color=colores_bar,
+        text=[f"{v:+.3f}%" for v in resumen_sim["pnl_prom"]],
+        textposition="outside",
+    ))
+    fig_pnl.add_hline(y=0, line_color="white", line_width=1)
+    fig_pnl.update_layout(
+        title="PnL promedio por operación según símbolo (aproximado por desvío CCL)",
+        xaxis_title="Símbolo",
+        yaxis_title="PnL promedio (%)",
+        plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
+        font_color="white", height=360,
+    )
+    st.plotly_chart(fig_pnl, use_container_width=True)
+
+    # Tabla detallada
+    with st.expander("📋 Ver tabla completa por símbolo"):
+        tabla = resumen_sim.copy()
+        tabla.columns = ["Símbolo", "N ops", "PnL prom %", "PnL total %",
+                         "Win Rate %", "Ciclos prom", "Dev pico prom %"]
+        # Colorear PnL prom
+        def color_pnl(val):
+            try:
+                return "color: #00C851" if float(val) > 0 else "color: #FF4444"
+            except:
+                return ""
+        st.dataframe(
+            tabla.style.map(color_pnl, subset=["PnL prom %", "PnL total %"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    # Distribución de salidas
+    with st.expander("📊 Ver distribución por tipo de salida"):
+        por_salida = df_sim.groupby(["sym", "tipo_salida"]).size().unstack(fill_value=0)
+        st.dataframe(por_salida, use_container_width=True)
+
+    st.caption(
+        "⚠️ PnL aproximado por movimiento del desvío CCL. "
+        "No incluye spreads de compra/venta ni slippage. "
+        "Usalo para comparar activos entre sí, no como PnL real esperado."
+    )
+
