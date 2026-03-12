@@ -475,3 +475,55 @@ else:
         "Usalo para comparar activos entre sí, no como PnL real esperado."
     )
 
+st.divider()
+
+# ── Pico de ganancia intra-operación ─────────────────────
+st.subheader("📈 Pico de Ganancia Intra-Operación")
+st.caption(
+    "Para cada entrada (dev < -0.6%), calcula el máximo PnL alcanzado "
+    "dentro de los 30 ciclos siguientes. "
+    "Sirve para calibrar la Salida A: si el p75 es +0.25%, "
+    "una Salida A en +0.15% captura la mayoría de operaciones pero deja ganancia sobre la mesa."
+)
+
+@st.cache_data(ttl=300)
+def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.6, ciclos_max=30):
+    """
+    Para cada entrada con dev < umbral, rastrea el pico máximo de PnL
+    (medido como dev_actual - dev_entrada) dentro de ciclos_max.
+    """
+    rows = []
+    for sym in cols:
+        serie = desvios_df[sym].dropna().values
+        n     = len(serie)
+        i     = 0
+        while i < n - 1:
+            if serie[i] < umbral_entrada:
+                dev_entrada  = serie[i]
+                pico_pnl     = 0.0
+                ciclo_pico   = 0
+                llego_pos    = False
+                for j in range(1, min(ciclos_max + 1, n - i)):
+                    pnl_j = serie[i + j] - dev_entrada
+                    if pnl_j > pico_pnl:
+                        pico_pnl   = pnl_j
+                        ciclo_pico = j
+                    if pnl_j > 0:
+                        llego_pos = True
+                rows.append({
+                    "sym":         sym,
+                    "dev_entrada": round(dev_entrada, 3),
+                    "pico_pnl":    round(pico_pnl, 3),
+                    "ciclo_pico":  ciclo_pico,
+                    "llego_pos":   llego_pos,
+                })
+                i += ciclos_max  # saltar para no solapar entradas
+            i += 1
+    return pd.DataFrame(rows)
+
+df_picos = calcular_picos_ganancia(desvios, cols_analisis)
+
+if df_picos.empty:
+    st.info("Sin datos suficientes para el análisis de picos.")
+else:
+    tot
