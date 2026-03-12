@@ -64,7 +64,7 @@ PARES = {
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
 }
 
-UMBRAL_COMPRA = -0.5
+UMBRAL_COMPRA = -0.6
 
 
 def hora_argentina():
