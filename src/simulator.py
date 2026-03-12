@@ -46,7 +46,8 @@ MAX_POSICIONES_POR_ESPECIE = 2
 UMBRAL_COMPRA = -0.6   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_A          = 0.15   # desvío CCL — [A] reversión completa del spread (%)
+UMBRAL_VENTA_A          = 0.15   # desvío CCL — [A] reversión spread (%)
+UMBRAL_VENTA_A_PNL      = 1.00   # PnL precio mínimo para Salida A (%)
 UMBRAL_VENTA_B_DEV      = 0.00   # desvío CCL histórico — [B] spread alguna vez neutro (%)
 UMBRAL_VENTA_B_PNL_MIN  = 0.30   # PnL % mínimo alcanzado para habilitar trailing B (%)
 UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
@@ -172,7 +173,10 @@ class Simulador:
 
         # [A] Reversión completa del spread — solo si la operación está en ganancia
         # Evita cerrar con pérdida por una reversión del spread sin ganancia de precio
-        if dev >= UMBRAL_VENTA_A and pnl_pct > 0:
+        # [A] Spread revertido Y precio subió al menos 1%
+        # Relación riesgo/ganancia: captura ~+1% sabiendo que el p75 del pico llega ahí
+        # Las que no llegan quedan para Salida B (trailing) o cierre forzado (pérdida leve)
+        if dev >= UMBRAL_VENTA_A and pnl_pct >= UMBRAL_VENTA_A_PNL:
             return "SALIDA_A"
 
         # [B] Trailing con ganancia confirmada:
@@ -409,4 +413,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-        ]
+  ]
+          
