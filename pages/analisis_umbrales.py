@@ -315,7 +315,7 @@ if resultados and len(df_r) >= 5:
         st.markdown("**Umbral de compra sugerido**")
         st.markdown(f"- Moderado (-1σ):    `{rec_compra_1s:.2f}%`")
         st.markdown(f"- Selectivo (-1.5σ): `{rec_compra_15s:.2f}%`")
-        st.markdown(f"- Actual en código:  `-0.50%`")
+        st.markdown(f"- Actual en código:  `-0.60%`")
     with col2:
         st.markdown("**Umbrales de venta sugeridos**")
         st.markdown(f"- Salida A (p25 pico): `+{rec_venta_cons:.2f}%`")
@@ -343,7 +343,7 @@ st.caption(
     "El PnL se aproxima por el movimiento del desvío CCL (no precio real)."
 )
 
-UMBRAL_COMPRA_SIM = -0.5
+UMBRAL_COMPRA_SIM = -0.6
 UMBRAL_VENTA_SIM  =  0.10
 CICLOS_MAX        = 30   # cierre forzado
 
