@@ -111,8 +111,9 @@ def init_state():
         sh.cargar_posiciones(sim)
         st.session_state.sim      = sim
         st.session_state.gmail    = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
-        st.session_state.alertadas = {}
-        st.session_state.ready    = True
+        st.session_state.alertadas    = {}
+        st.session_state.ciclos_warmup = 0   # ciclos iniciales sin operar
+        st.session_state.ready         = True
     return True
 
 # ── HMM — MODELO SIMONS (barras 4H) ──────────────────────
@@ -260,8 +261,14 @@ def main():
     hora      = hora_argentina()
     ahora     = hora.time()
 
-    # Refrescar barras 4H para HMM (cada 30 min, no cada 60s)
+    # Refrescar barras 1D para HMM (cada 30 min, no cada 60s)
     _refrescar_barras_si_necesario()
+
+    # Warmup: los primeros 2 ciclos no se opera para estabilizar HMM y precios
+    # Evita que el primer ciclo post-arranque abra posiciones con climas recién cargados
+    WARMUP_CICLOS = 2
+    en_warmup = st.session_state.ciclos_warmup < WARMUP_CICLOS
+    st.session_state.ciclos_warmup += 1
 
     ts_key = str(int(time.time() // REFRESH_SECONDS))
     p_ars, p_usd = fetch_precios(ts_key)
@@ -287,7 +294,7 @@ def main():
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
         # Desvío CCL — verde si ≤ -0.5% independientemente del clima
-        if dev <= -0.5:
+        if dev <= -0.6:
             desvio_color = "🟢"
         elif dev >= 0.1:
             desvio_color = "🔴"
@@ -298,7 +305,7 @@ def main():
         # 🚀 COMPRA: spread favorable Y clima BULL (lo que ejecuta el simulador)
         # 🪙 VENTA:  spread revertido (desvío ≥ +0.10%) — solo aplica si hay posición abierta
         # ⏳ ESPERAR: cualquier otro caso
-        if dev <= -0.5 and clima == "🟢":
+        if dev <= -0.6 and clima == "🟢":
             accion = "🚀 COMPRA"
         elif dev >= 0.1:
             accion = "🔴 VENTA"
@@ -320,7 +327,10 @@ def main():
 
     # ── Simulador ──────────────────────────────────────────
     if HORA_APERTURA <= ahora:
-        resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora)
+        # Durante warmup, pasar ahora=None hace que el sim use datetime.now() internamente
+        # pero bloqueamos compras pasando una hora fuera de ventana si estamos en warmup
+        ahora_sim = dtime(0, 0) if en_warmup else ahora  # 00:00 = fuera de ventana de compra
+        resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora_sim)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
         ops_abiertas = resultado.get("abiertas", [])
         hay_cambios = bool(ops_abiertas or ops_cerradas)
@@ -401,7 +411,7 @@ def main():
         textposition="outside",
     ))
     fig.add_hline(y=0.1,  line_dash="dash", line_color="#FF4444", annotation_text="+0.10%")
-    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.50%")
+    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.60%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
