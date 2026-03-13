@@ -76,8 +76,8 @@ PARES = {
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
-    "TGS":   ("TGS",     5), "LOMA":  ("LOMA",   5),
-    "TXAR":  ("TXR",     4), "GLD":   ("GLD",   50),
+    "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
+    "TXAR":  ("TX",      4), "GLD":   ("GLD",   50),
     "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
 
@@ -239,11 +239,28 @@ def fetch_precios(ts_key):
     iol    = st.session_state.iol
     alpaca = st.session_state.alpaca
     p_ars  = {}
-    for sym in PARES:
-        q = iol.get_quote(sym)
-        if q and q.get("last"):
-            p_ars[sym] = q["last"]
-        time.sleep(0.08)
+
+    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXAR","TGSU2","SUPV"}
+
+    # Batch 1 — CEDEARs (1 request)
+    try:
+        data = iol.get_panel("CEDEARs")
+        for t in data:
+            if t["simbolo"] in CEDEARS_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
+    except Exception as e:
+        st.warning(f"IOL CEDEARs batch: {e}")
+
+    # Batch 2 — MerVal (1 request)
+    try:
+        data = iol.get_panel("MerVal")
+        for t in data:
+            if t["simbolo"] in MERVAL_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
+    except Exception as e:
+        st.warning(f"IOL MerVal batch: {e}")
+
     syms_usd = list({v[0] for v in PARES.values()})
     snaps    = alpaca.get_snapshots(syms_usd)
     p_usd    = {s: snaps[s]["last"] for s in snaps if snaps[s].get("last")}
