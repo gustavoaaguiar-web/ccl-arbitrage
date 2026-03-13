@@ -23,7 +23,7 @@ st.title("📐 Análisis de Umbrales Óptimos CCL")
 
 # ── Clasificación de liquidez ─────────────────────────────
 LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI", "GLD", "IBIT", "SPY"]
-ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST", "TGS", "LOMA", "TXAR"]
+ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST", "TGSU2", "LOMA", "TXR"]
 
 # ── Conexión Sheets ───────────────────────────────────────
 @st.cache_resource
