@@ -16,16 +16,26 @@ IOL_BASE_URL = "https://api.invertironline.com"
 # Pares Cedear (símbolo IOL) → ADR (símbolo Alpaca) + ratio de conversión
 # ratio = cuántos cedears equivalen a 1 ADR
 CEDEAR_ADR_PAIRS = {
+    "AAPL":  {"adr": "AAPL",  "ratio": 20},
+    "AMZN":  {"adr": "AMZN",  "ratio": 144},
+    "MSFT":  {"adr": "MSFT",  "ratio": 30},
+    "NVDA":  {"adr": "NVDA",  "ratio": 24},
+    "TSLA":  {"adr": "TSLA",  "ratio": 15},
+    "META":  {"adr": "META",  "ratio": 24},
+    "GOOGL": {"adr": "GOOGL", "ratio": 58},
+    "MELI":  {"adr": "MELI",  "ratio": 120},
+    "GLD":   {"adr": "GLD",   "ratio": 50},
+    "IBIT":  {"adr": "IBIT",  "ratio": 10},
+    "SPY":   {"adr": "SPY",   "ratio": 20},
+    "VIST":  {"adr": "VIST",  "ratio": 3},
     "GGAL":  {"adr": "GGAL",  "ratio": 10},
-    "YPF":   {"adr": "YPF",   "ratio": 1},
+    "YPFD":  {"adr": "YPF",   "ratio": 1},
     "PAMP":  {"adr": "PAM",   "ratio": 25},
-    "BBAR":  {"adr": "BMA",   "ratio": 10},
-    "TECO2": {"adr": "TEO",   "ratio": 5},
-    "BFR":   {"adr": "BBAR",  "ratio": 3},
-    "CEPU":  {"adr": "CEPU",  "ratio": 20},
-    "LOMA":  {"adr": "LOMA",  "ratio": 5},
+    "CEPU":  {"adr": "CEPU",  "ratio": 10},
+    "BMA":   {"adr": "BMA",   "ratio": 10},
+    "TXAR":  {"adr": "TX",    "ratio": 4},
+    "TGSU2": {"adr": "TGS",   "ratio": 5},
     "SUPV":  {"adr": "SUPV",  "ratio": 5},
-    "TXAR":  {"adr": "TX",    "ratio": 1},
 }
 
 
@@ -102,7 +112,7 @@ class IOLClient:
     def get_quote(self, symbol: str, market: str = "bCBA") -> Optional[dict]:
         """
         Retorna la cotización de un instrumento.
-        market: 'bCBA' para BYMA, 'nYSE' para NYSE (algunos brokers permiten).
+        market: 'bCBA' para BYMA, 'nYSE' para NYSE.
         """
         self._ensure_token()
         try:
@@ -113,26 +123,47 @@ class IOLClient:
             )
             resp.raise_for_status()
             data = resp.json()
+            puntas = data.get("puntas") or {}
             return {
-                "symbol": symbol,
-                "last":   data.get("ultimoPrecio"),
-                "bid":    data.get("puntas", [{}])[0].get("precioCompra") if data.get("puntas") else None,
-                "ask":    data.get("puntas", [{}])[0].get("precioVenta") if data.get("puntas") else None,
-                "volume": data.get("volumen"),
-                "ts":     datetime.now().isoformat(),
+                "symbol":       symbol,
+                "last":         data.get("ultimoPrecio"),
+                "ultimoPrecio": data.get("ultimoPrecio"),
+                "bid":          puntas.get("precioCompra"),
+                "ask":          puntas.get("precioVenta"),
+                "volume":       data.get("volumen"),
+                "ts":           datetime.now().isoformat(),
             }
         except requests.RequestException as e:
             logger.error(f"Error cotización {symbol}: {e}")
             return None
 
+    def get_panel(self, panel: str) -> list:
+        """
+        Retorna lista de titulos de un panel en un solo request.
+        panel: 'CEDEARs' → todos los CEDEARs
+               'MerVal'  → panel líderes acciones argentinas
+        Cada item tiene: simbolo, ultimoPrecio, puntas, variacionPorcentual, etc.
+        """
+        self._ensure_token()
+        try:
+            resp = self.session.get(
+                f"{IOL_BASE_URL}/api/v2/Cotizaciones/Acciones/{panel}/Argentina",
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json().get("titulos", [])
+        except requests.RequestException as e:
+            logger.error(f"Error panel IOL {panel}: {e}")
+            return []
+
     def get_all_cedear_quotes(self) -> dict:
-        """Trae cotizaciones de todos los cedears configurados."""
+        """Trae cotizaciones de todos los cedears configurados (legacy — usar get_panel)."""
         quotes = {}
         for symbol in CEDEAR_ADR_PAIRS:
             q = self.get_quote(symbol)
             if q and q["last"]:
                 quotes[symbol] = q
-            time.sleep(0.1)  # Rate limiting suave
+            time.sleep(0.1)
         return quotes
 
     def test_connection(self) -> dict:
@@ -142,8 +173,7 @@ class IOLClient:
             return {"ok": False, "msg": "Credenciales inválidas o sin conexión."}
         quote = self.get_quote("GGAL")
         return {
-            "ok": True,
-            "msg": "Conexión exitosa a IOL",
+            "ok":    True,
+            "msg":   "Conexión exitosa a IOL",
             "sample": quote,
-      }
-      
+        }
