@@ -33,7 +33,7 @@ CEDEAR_ADR_PAIRS = {
     "PAMP":  {"adr": "PAM",   "ratio": 25},
     "CEPU":  {"adr": "CEPU",  "ratio": 10},
     "BMA":   {"adr": "BMA",   "ratio": 10},
-    "TXAR":  {"adr": "TX",    "ratio": 4},
+    "TXR":  {"adr": "TX",    "ratio": 4},
     "TGSU2": {"adr": "TGS",   "ratio": 5},
     "SUPV":  {"adr": "SUPV",  "ratio": 5},
 }
