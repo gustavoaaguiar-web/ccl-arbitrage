@@ -177,3 +177,4 @@ class IOLClient:
             "msg":   "Conexión exitosa a IOL",
             "sample": quote,
         }
+        
