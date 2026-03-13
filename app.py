@@ -77,7 +77,7 @@ PARES = {
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
     "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
-    "TXAR":  ("TX",      4), "GLD":   ("GLD",   50),
+    "TXR":  ("TX",      4), "GLD":   ("GLD",   50),
     "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
 
