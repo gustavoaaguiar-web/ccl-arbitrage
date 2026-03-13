@@ -22,8 +22,8 @@ st.set_page_config(page_title="Análisis Umbrales", page_icon="📐", layout="wi
 st.title("📐 Análisis de Umbrales Óptimos CCL")
 
 # ── Clasificación de liquidez ─────────────────────────────
-LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI"]
-ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST"]
+LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI", "GLD", "IBIT", "SPY"]
+ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST", "TGS", "LOMA", "TXAR"]
 
 # ── Conexión Sheets ───────────────────────────────────────
 @st.cache_resource
