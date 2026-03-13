@@ -76,6 +76,9 @@ PARES = {
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
+    "TGS":   ("TGS",     5), "LOMA":  ("LOMA",   5),
+    "TXAR":  ("TXR",     4), "GLD":   ("GLD",   50),
+    "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
 
 # ── SECRETS ───────────────────────────────────────────────
