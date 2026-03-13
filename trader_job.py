@@ -62,8 +62,8 @@ PARES = {
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
-    "TGS":   ("TGS",     5), "LOMA":  ("LOMA",   5),
-    "TXAR":  ("TXR",     4), "GLD":   ("GLD",   50),
+    "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
+    "TXAR":  ("TX",      4), "GLD":   ("GLD",   50),
     "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
 
@@ -133,15 +133,30 @@ def clima_hmm(sym, barras_cache):
 
 # ── PRECIOS ───────────────────────────────────────────────
 def fetch_precios(iol, alpaca):
-    p_ars, p_usd = {}, {}
-    for sym in PARES:
-        try:
-            q = iol.get_quote(sym)
-            if q:
-                p_ars[sym] = q.get("ultimoPrecio") or q.get("last") or 0
-        except Exception as e:
-            logger.warning(f"IOL {sym}: {e}")
+    p_ars = {}
 
+    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXAR","TGSU2","SUPV"}
+
+    # Batch 1 — CEDEARs (1 request)
+    try:
+        data = iol.get_panel("CEDEARs")
+        for t in data:
+            if t["simbolo"] in CEDEARS_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
+    except Exception as e:
+        logger.warning(f"IOL CEDEARs batch: {e}")
+
+    # Batch 2 — MerVal (1 request)
+    try:
+        data = iol.get_panel("MerVal")
+        for t in data:
+            if t["simbolo"] in MERVAL_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
+    except Exception as e:
+        logger.warning(f"IOL MerVal batch: {e}")
+
+    p_usd = {}
     syms_usd = list({v[0] for v in PARES.values()})
     try:
         snaps = alpaca.get_snapshots(syms_usd)
