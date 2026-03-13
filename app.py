@@ -240,8 +240,8 @@ def fetch_precios(ts_key):
     alpaca = st.session_state.alpaca
     p_ars  = {}
 
-    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
-    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXAR","TGSU2","SUPV"}
+    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","TXR","VIST"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TGSU2","SUPV"}
 
     # Batch 1 — CEDEARs (1 request)
     try:
