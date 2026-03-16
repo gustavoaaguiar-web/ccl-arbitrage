@@ -121,11 +121,11 @@ def init_state():
 
 # ── HMM — MODELO SIMONS (barras 4H) ──────────────────────
 # Entrena sobre log-returns de barras 4H del precio USD del subyacente.
-# Las barras 4H tienen suficiente señal para distinguir regímenes bull/bear,
+# Las barras 1D tienen suficiente señal para distinguir regímenes bull/bear,
 # a diferencia de los snapshots de 60s que son esencialmente ruido blanco.
 # Cache en session_state["hmm_barras"] — se refresca cada 30 minutos.
 
-HMM_BARRAS_REFRESH_MIN = 30   # refrescar barras cada N minutos
+HMM_BARRAS_REFRESH_MIN = 10   # refrescar barras cada N minutos
 HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
 def _fetch_barras_4h():
