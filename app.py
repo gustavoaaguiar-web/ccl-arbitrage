@@ -39,6 +39,8 @@ from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import sys, os
+
+# Inserción de la ruta src para las importaciones
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -51,6 +53,8 @@ from iol_client import IOLClient
 from alpaca_client import AlpacaClient
 from simulator import Simulador
 from sheets_manager import SheetsManager
+# Importamos nuestro nuevo modelo refactorizado
+from hmm_model import SimonsHMM
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,6 +84,9 @@ PARES = {
     "TXR":   ("TX",      4), "GLD":   ("GLD",   50),
     "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
+
+# Instancia global del clasificador HMM (requiere al menos 50 barras para no overfitear)
+hmm_classifier = SimonsHMM(min_obs=50)
 
 # ── SECRETS ───────────────────────────────────────────────
 def get_secrets():
@@ -119,18 +126,18 @@ def init_state():
         st.session_state.ready         = True
     return True
 
-# ── HMM — MODELO SIMONS (barras 4H) ──────────────────────
-# Entrena sobre log-returns de barras 4H del precio USD del subyacente.
-# Las barras 1D tienen suficiente señal para distinguir regímenes bull/bear,
-# a diferencia de los snapshots de 60s que son esencialmente ruido blanco.
+# ── HMM — MODELO SIMONS (barras 1D) ──────────────────────
+# Entrena sobre log-returns de barras 1D del precio USD del subyacente.
+# Las barras 1D (como confirmaste estadísticamente) tienen suficiente señal
+# para distinguir regímenes bull/bear.
 # Cache en session_state["hmm_barras"] — se refresca cada 30 minutos.
 
-HMM_BARRAS_REFRESH_MIN = 10   # refrescar barras cada N minutos
+HMM_BARRAS_REFRESH_MIN = 30   # refrescar barras cada N minutos
 HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
-def _fetch_barras_4h():
+def _fetch_barras_1d():
     """
-    Descarga barras 4H via AlpacaClient para todos los simbolos USD en PARES.
+    Descarga barras 1D via AlpacaClient para todos los simbolos USD en PARES.
     Retorna dict {sym_usd: [close, close, ...]} o {} si falla.
     """
     alpaca   = st.session_state.get("alpaca")
@@ -140,35 +147,25 @@ def _fetch_barras_4h():
     return alpaca.get_bars(syms_usd, timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
 
 def _refrescar_barras_si_necesario():
-    """Refresca el cache de barras 4H si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
+    """Refresca el cache de barras 1D si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
     ahora  = hora_argentina()
     ultimo = st.session_state.get("hmm_barras_ts")
     if ultimo is None or (ahora - ultimo).seconds >= HMM_BARRAS_REFRESH_MIN * 60:
-        barras = _fetch_barras_4h()
+        barras = _fetch_barras_1d()
         if barras:
             st.session_state["hmm_barras"]    = barras
             st.session_state["hmm_barras_ts"] = ahora
-            logger.info(f"HMM 4H: barras actualizadas para {list(barras.keys())}")
+            logger.info(f"HMM 1D: barras actualizadas para {list(barras.keys())}")
 
 def clima_hmm(sym, historial=None):
     """
-    Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
-    Usa barras 4H de Alpaca (cache de 30 min).
+    Delega la predicción al modelo SimonsHMM importado.
     """
     sym_usd = PARES[sym][0]
     barras  = st.session_state.get("hmm_barras", {})
     precios = barras.get(sym_usd, [])
-    if len(precios) < 5:
-        return "🔴"
-    try:
-        from hmmlearn.hmm import GaussianHMM
-        ret    = np.diff(np.log(precios)).reshape(-1, 1)
-        m      = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
-        estado = m.predict(ret)[-1]
-        bull   = np.argmax(m.means_.flatten())
-        return "🟢" if estado == bull else "🔴"
-    except:
-        return "🔴"
+    
+    return hmm_classifier.predict_climate(precios)
 
 # ── CCL ───────────────────────────────────────────────────
 def calcular_ccl(p_ars, p_usd):
