@@ -1,158 +1,77 @@
 """
-Modelo HMM (Hidden Markov Model) para determinar el "clima" del mercado.
+Modelo HMM (Hidden Markov Model) - Arquitectura Simons
 
-Estados ocultos:
-    0 → BULL  (mercado alcista, alta volatilidad positiva)
-    1 → BEAR  (mercado bajista, alta volatilidad negativa)
-    2 → LATERAL (mercado sin tendencia, baja volatilidad)
+Determina el "clima" del mercado (BULL / BEAR) basándose EXCLUSIVAMENTE 
+en los log-returns del activo subyacente en USD. 
 
-Observaciones (features):
-    - Retorno promedio de los cedears (%)
-    - Volatilidad de las desviaciones CCL
-    - Dispersión entre CCL_i y CCL_promedio
-
-El modelo se entrena con historial y luego predice el estado actual.
+Identificación de Estados:
+A diferencia de usar solo la media (que puede fallar por alta volatilidad en crashes),
+este modelo calcula el Ratio de Sharpe de cada estado oculto (Media / Desvío Estándar).
+El estado con el mayor Sharpe se clasifica dinámicamente como el régimen BULL (🟢).
+Esto previene el "State Flipping" cuando se re-entrena el modelo.
 """
 
 import logging
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List
 
 logger = logging.getLogger(__name__)
 
-STATE_LABELS = {0: "🟢 BULL", 1: "🔴 BEAR", 2: "🟡 LATERAL"}
-STATE_COLORS = {0: "#00C851", 1: "#FF4444", 2: "#FFD700"}
-
-
-class HMMMarketModel:
+class SimonsHMM:
     """
-    HMM Gaussiano para clasificar el clima de mercado.
-    Usa hmmlearn.GaussianHMM internamente.
-    Funciona con mínimo ~20 observaciones de historial.
+    HMM Gaussiano para clasificar el clima de mercado basado en subyacentes USD.
     """
-
-    def __init__(self, n_states: int = 3, n_iter: int = 100):
+    def __init__(self, n_states: int = 2, n_iter: int = 100, min_obs: int = 50):
         self.n_states = n_states
-        self.n_iter   = n_iter
-        self.model    = None
-        self.trained  = False
-        self._obs_buffer: List[np.ndarray] = []
+        self.n_iter = n_iter
+        self.min_obs = min_obs
 
-    def _build_observation(self, ccl_history: list) -> Optional[np.ndarray]:
+    def predict_climate(self, prices: List[float]) -> str:
         """
-        Construye vector de observación a partir del historial CCL.
-        Retorna None si no hay suficientes datos.
+        Recibe una serie de precios históricos (ej. barras 1D) del activo en USD.
+        Devuelve '🟢' si el régimen actual es BULL, o '🔴' si es BEAR/LATERAL.
         """
-        if len(ccl_history) < 2:
-            return None
-
-        obs = []
-        for i in range(1, len(ccl_history)):
-            prev = ccl_history[i - 1]
-            curr = ccl_history[i]
-
-            devs_prev = list(prev["entries"].values())
-            devs_curr = list(curr["entries"].values())
-
-            if not devs_prev or not devs_curr:
-                continue
-
-            ret      = np.mean(devs_curr) - np.mean(devs_prev)   # retorno medio
-            vol      = np.std(devs_curr) if len(devs_curr) > 1 else 0.0
-            dispersion = np.max(devs_curr) - np.min(devs_curr)   # spread
-
-            obs.append([ret, vol, dispersion])
-
-        return np.array(obs) if obs else None
-
-    def train(self, ccl_history: list) -> bool:
-        """
-        Entrena el HMM con el historial de desvíos CCL.
-        Requiere al menos 20 snapshots.
-        """
-        if len(ccl_history) < 20:
-            logger.info(f"HMM necesita ≥20 obs. Tiene {len(ccl_history)}.")
-            return False
+        if not prices or len(prices) < self.min_obs:
+            logger.warning(f"HMM: Insuficientes datos ({len(prices) if prices else 0} < {self.min_obs}). Default a 🔴.")
+            return "🔴"
 
         try:
             from hmmlearn.hmm import GaussianHMM
-        except ImportError:
-            logger.error("hmmlearn no instalado. Pip install hmmlearn.")
-            return False
-
-        obs = self._build_observation(ccl_history)
-        if obs is None or len(obs) < 10:
-            return False
-
-        try:
-            self.model = GaussianHMM(
-                n_components=self.n_states,
-                covariance_type="diag",
+            
+            # Calcular log-returns (ortogonal a los niveles del CCL)
+            ret = np.diff(np.log(prices)).reshape(-1, 1)
+            
+            # Entrenar el modelo
+            m = GaussianHMM(
+                n_components=self.n_states, 
+                random_state=42, # Semilla fija para consistencia inicial
                 n_iter=self.n_iter,
-                random_state=42,
+                covariance_type="diag"
             )
-            self.model.fit(obs)
-            self.trained = True
-            logger.info(f"HMM entrenado con {len(obs)} observaciones.")
-            return True
+            m.fit(ret)
+            
+            # Predecir el estado de la observación más reciente
+            estado_actual = m.predict(ret)[-1]
+            
+            # Identificar cuál estado es realmente el BULL usando el Ratio de Sharpe
+            means = m.means_.flatten()
+            variances = m.covars_.flatten()
+            
+            # Raíz cuadrada de la varianza = Desvío estándar (volatilidad)
+            # np.maximum evita divisiones por cero en casos atípicos
+            std_devs = np.sqrt(np.maximum(variances, 1e-8))
+            
+            # Sharpe = Retorno medio / Volatilidad
+            sharpes = means / std_devs
+            
+            # El estado con mejor relación riesgo/beneficio es nuestro régimen BULL
+            bull_state = np.argmax(sharpes)
+            
+            return "🟢" if estado_actual == bull_state else "🔴"
+            
+        except ImportError:
+            logger.error("hmmlearn no está instalado. Ejecutá: pip install hmmlearn")
+            return "🔴"
         except Exception as e:
-            logger.error(f"Error entrenando HMM: {e}")
-            return False
-
-    def predict_state(self, ccl_history: list) -> Tuple[int, str, float]:
-        """
-        Predice el estado actual del mercado.
-        Retorna (state_id, label, confidence).
-        """
-        if not self.trained or self.model is None:
-            # Fallback heurístico simple
-            return self._heuristic_state(ccl_history)
-
-        obs = self._build_observation(ccl_history[-21:])  # últimas 20 transiciones
-        if obs is None or len(obs) == 0:
-            return self._heuristic_state(ccl_history)
-
-        try:
-            states = self.model.predict(obs)
-            probs  = self.model.predict_proba(obs)
-            last_state      = int(states[-1])
-            last_confidence = float(probs[-1][last_state])
-            label = STATE_LABELS.get(last_state, "DESCONOCIDO")
-            return last_state, label, last_confidence
-        except Exception as e:
-            logger.error(f"Error prediciendo estado: {e}")
-            return self._heuristic_state(ccl_history)
-
-    def _heuristic_state(self, ccl_history: list) -> Tuple[int, str, float]:
-        """
-        Clasificación heurística simple cuando no hay modelo entrenado.
-        Basada en la dispersión y tendencia de los últimos desvíos.
-        """
-        if not ccl_history:
-            return 2, STATE_LABELS[2], 0.5
-
-        last = ccl_history[-1]
-        devs = list(last.get("entries", {}).values())
-
-        if not devs:
-            return 2, STATE_LABELS[2], 0.5
-
-        mean_dev = np.mean(devs)
-        vol_dev  = np.std(devs) if len(devs) > 1 else 0
-
-        if mean_dev > 0.3 and vol_dev > 0.2:
-            return 0, STATE_LABELS[0], 0.6    # BULL
-        elif mean_dev < -0.3 and vol_dev > 0.2:
-            return 1, STATE_LABELS[1], 0.6    # BEAR
-        else:
-            return 2, STATE_LABELS[2], 0.6    # LATERAL
-
-    def get_trading_recommendation(self, state_id: int) -> str:
-        """Recomendación de trading según el clima."""
-        recs = {
-            0: "Mercado BULL: señales BUY_ARS tienen mayor probabilidad de éxito.",
-            1: "Mercado BEAR: señales SELL_ARS tienen mayor probabilidad de éxito.",
-            2: "Mercado LATERAL: reducir tamaño de posición. Esperar confirmación.",
-        }
-        return recs.get(state_id, "Sin recomendación disponible.")
-      
+            logger.error(f"Error entrenando/prediciendo SimonsHMM: {e}")
+            return "🔴"
