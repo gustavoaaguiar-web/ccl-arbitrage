@@ -338,12 +338,12 @@ st.divider()
 st.subheader("💰 Rendimiento Simulado por Acción")
 st.caption(
     "Simula operaciones usando las reglas actuales: "
-    "compra si desvío < -0.6%, venta si desvío ≥ +0.15% Y precio ≥ +1.0%, "
+    "compra si desvío < -0.5%, venta si desvío ≥ +0.15% Y precio ≥ +1.0%, "
     "o cierre forzado a los 30 ciclos. "
     "El PnL se aproxima por el movimiento del desvío CCL (no precio real)."
 )
 
-UMBRAL_COMPRA_SIM = -0.6
+UMBRAL_COMPRA_SIM = -0.5
 UMBRAL_VENTA_SIM  =  0.10
 CICLOS_MAX        = 30   # cierre forzado
 
@@ -480,13 +480,13 @@ st.divider()
 # ── Pico de ganancia intra-operación ─────────────────────
 st.subheader("📈 Pico de Ganancia Intra-Operación")
 st.caption(
-    "Para cada entrada (dev < -0.6%), calcula el máximo PnL alcanzado "
+    "Para cada entrada (dev < -0.5%), calcula el máximo PnL alcanzado "
     "dentro de los 30 ciclos siguientes. "
     "Sirve para calibrar la Salida A: si el p75 es +0.25%, "
     "una Salida A en +0.15% captura la mayoría de operaciones pero deja ganancia sobre la mesa."
 )
 
-def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.6, ciclos_max=30):
+def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.5, ciclos_max=30):
     """
     Para cada entrada con dev < umbral, rastrea el pico máximo de PnL
     (medido como dev_actual - dev_entrada) dentro de ciclos_max.
