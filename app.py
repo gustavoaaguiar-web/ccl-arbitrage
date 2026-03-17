@@ -316,7 +316,7 @@ def main():
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
         # Desvío CCL — verde si ≤ -0.5% independientemente del clima
-        if dev <= -0.6:
+        if dev <= -0.5:
             desvio_color = "🟢"
         elif dev >= 0.1:
             desvio_color = "🔴"
@@ -327,7 +327,7 @@ def main():
         # 🚀 COMPRA: spread favorable Y clima BULL (lo que ejecuta el simulador)
         # 🪙 VENTA:  spread revertido (desvío ≥ +0.10%) — solo aplica si hay posición abierta
         # ⏳ ESPERAR: cualquier otro caso
-        if dev <= -0.6 and clima == "🟢":
+        if dev <= -0.5 and clima == "🟢":
             accion = "🚀 COMPRA"
         elif dev >= 0.1:
             accion = "🔴 VENTA"
@@ -433,7 +433,7 @@ def main():
         textposition="outside",
     ))
     fig.add_hline(y=0.15, line_dash="dash", line_color="#FF4444", annotation_text="+0.15%")
-    fig.add_hline(y=-0.6, line_dash="dash", line_color="#00C851", annotation_text="-0.60%")
+    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.50%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
