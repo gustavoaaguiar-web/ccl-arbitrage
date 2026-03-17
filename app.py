@@ -455,48 +455,46 @@ def main():
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # ── Posiciones abiertas ────────────────────────────────
+        # ── POSICIONES ABIERTAS (CON VALIDACIÓN ANTI-ERROR) ────────
     if any(sim.posiciones.values()):
         st.subheader("💼 Posiciones Abiertas")
         for sym, poss in sim.posiciones.items():
             for pos in poss:
-                precio_actual = p_ars.get(sym, pos.precio_entry)
-                pnl     = (precio_actual - pos.precio_entry) * pos.cantidad
-                                # Parche de seguridad para evitar el error de división por cero
-                if pos.precio_entry and pos.precio_entry > 0:
-                    pnl_pct = ((precio_actual / pos.precio_entry) - 1) * 100
-                else:
-                    pnl_pct = 0.0
-                  
-                emoji   = "✅" if pnl >= 0 else "🔻"
+                # 1. VALIDACIÓN: Si la posición no tiene precio o monto, la saltamos
+                p_entry = getattr(pos, 'precio_entry', 0)
+                m_entry = getattr(pos, 'monto_entry', 0)
+                p_id = getattr(pos, 'id', 'S/N')
 
-                with st.expander(
-                    f"{emoji} {pos.id} — {sym}  |  PnL: ${pnl:+,.0f}  ({pnl_pct:+.2f}%)",
-                    expanded=True,
-                ):
+                if p_entry <= 0 or m_entry <= 0:
+                    st.warning(f"⚠️ Dato inválido en {sym} (ID: {p_id}). Revisar Google Sheets.")
+                    continue
+
+                precio_actual = p_ars.get(sym, p_entry)
+                pnl = (precio_actual - p_entry) * pos.cantidad
+                pnl_pct = ((precio_actual / p_entry) - 1) * 100
+
+                emoji = "✅" if pnl >= 0 else "🔻"
+                
+                # 2. KEY ÚNICA: Combinamos ID y Símbolo para evitar DuplicateElementKey
+                with st.expander(f"{emoji} {p_id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%)", expanded=True):
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Entrada",   f"${pos.precio_entry:,.1f}")
-                    c2.metric("Actual",    f"${precio_actual:,.1f}",  f"{pnl_pct:+.2f}%")
-                    c3.metric("Invertido", f"${pos.monto_entry:,.0f}")
-                    c4.metric("Cantidad",  f"{pos.cantidad:.2f} u.")
+                    c1.metric("Entrada", f"${p_entry:,.1f}")
+                    c2.metric("Actual", f"${precio_actual:,.1f}", f"{pnl_pct:+.2f}%")
+                    c3.metric("Invertido", f"${m_entry:,.0f}")
+                    c4.metric("Cantidad", f"{pos.cantidad:.2f} u.")
 
-                    st.caption(f"Apertura: {pos.ts_entry}  |  CCL entrada: ${pos.ccl_entry:,.2f}  |  Desvío entrada: {pos.dev_entry:+.2f}%")
-
-                    # Botón venta manual — solo simulador
-                    # TODO: REAL TRADING → agregar iol.place_order() aquí también
-                    if st.button(
-                        f"🔴 Vender {sym} ({pos.id}) — simulador",
-                        key=f"venta_manual_{pos.id}",
-                        type="primary",
-                    ):
+                    # Botón con identificador único reforzado
+                    btn_key = f"v_manual_{p_id}_{sym}_{int(p_entry)}"
+                    if st.button(f"🔴 Vender {sym} ({p_id})", key=btn_key, type="primary"):
                         op = sim.cerrar_posicion(sym, pos, precio_actual, "VENTA_MANUAL")
                         sim.posiciones[sym] = [p for p in sim.posiciones[sym] if p.id != pos.id]
                         sheets.guardar_operacion(sim.fila_sheets_operacion(op))
                         sheets.guardar_posiciones(sim)
                         sheets.guardar_estado_simulador(sim)
-                        sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
-                        st.success(f"✅ {sym} vendido | PnL: ${op.pnl:+,.0f} ({op.pnl_pct:+.2f}%)")
+                        st.success(f"✅ Venta registrada para {sym}")
                         time.sleep(1)
                         st.rerun()
+
 
     # ── Historial ops ──────────────────────────────────────
     with st.expander("📜 Historial de Operaciones"):
