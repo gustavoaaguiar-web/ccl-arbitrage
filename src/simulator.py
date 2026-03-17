@@ -43,7 +43,7 @@ CAPITAL_INICIAL            = 10_000_000.0
 PCT_POR_OPERACION          = 0.15
 MAX_POSICIONES_POR_ESPECIE = 2
 
-UMBRAL_COMPRA = -0.6   # desvío CCL mínimo para comprar (%)
+UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
 UMBRAL_VENTA_A          = 0.15   # desvío CCL — [A] reversión spread (%)
