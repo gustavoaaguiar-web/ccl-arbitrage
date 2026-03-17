@@ -49,7 +49,7 @@ UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
 UMBRAL_VENTA_A          = 0.15   # desvío CCL — [A] reversión spread (%)
 UMBRAL_VENTA_A_PNL      = 1.00   # PnL precio mínimo para Salida A (%)
 UMBRAL_VENTA_B_DEV      = 0.00   # desvío CCL histórico — [B] spread alguna vez neutro (%)
-UMBRAL_VENTA_B_PNL_MIN  = 0.30   # PnL % mínimo alcanzado para habilitar trailing B (%)
+UMBRAL_VENTA_B_PNL_MIN  = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
 UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
 TAKE_PROFIT_D           = 2.40   # PnL precio — [D] take profit puro (%)
 STOP_LOSS_C             = -0.80  # PnL precio — [C] stop loss duro (%)
@@ -155,8 +155,8 @@ class Simulador:
 
         Orden de prioridad:
           1. [C] Stop loss duro         → pnl_pct ≤ -0.80%
-          2. [A] Reversión del spread   → dev ≥ +0.10%
-          3. [B] Trailing confirmado    → dev_max ≥ 0%  AND  pnl_max ≥ +0.30%
+          2. [A] Reversión del spread   → dev ≥ +0.10% AND pnl_pct ≥ +1.00%
+          3. [B] Trailing confirmado    → dev_max ≥ 0%  AND  pnl_max ≥ +0.50%
                                           AND  caída desde pico ≥ 0.25%
           4. [D] Take profit puro       → pnl_pct ≥ +2.40%
 
@@ -181,7 +181,7 @@ class Simulador:
 
         # [B] Trailing con ganancia confirmada:
         #   - El spread alguna vez se neutralizó (dev_max_alcanzado ≥ 0%)
-        #   - El precio llegó a ganar al menos +0.30% en algún momento
+        #   - El precio llegó a ganar al menos +0.50% en algún momento
         #   - Desde ese pico el precio cayó ≥ 0.25%
         if (pos.dev_max_alcanzado >= UMBRAL_VENTA_B_DEV
                 and pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN):
