@@ -461,7 +461,12 @@ def main():
             for pos in poss:
                 precio_actual = p_ars.get(sym, pos.precio_entry)
                 pnl     = (precio_actual - pos.precio_entry) * pos.cantidad
-                pnl_pct = ((precio_actual / pos.precio_entry) - 1) * 100
+                                # Parche de seguridad para evitar el error de división por cero
+                if pos.precio_entry and pos.precio_entry > 0:
+                    pnl_pct = ((precio_actual / pos.precio_entry) - 1) * 100
+                else:
+                    pnl_pct = 0.0
+                  
                 emoji   = "✅" if pnl >= 0 else "🔻"
 
                 with st.expander(
