@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Callable, Dict, Optional
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,8 @@ class AlpacaClient:
             return
 
         def on_message(ws, message):
-            msgs = json.loads(message)
+            import json as _json
+            msgs = _json.loads(message)
             for msg in msgs:
                 if msg.get("T") == "t":  # trade
                     sym   = msg["S"]
@@ -102,12 +103,13 @@ class AlpacaClient:
                         on_update(sym, price)
 
         def on_open(ws):
-            ws.send(json.dumps({
+            import json as _json
+            ws.send(_json.dumps({
                 "action": "auth",
                 "key":    self.api_key,
                 "secret": self.api_secret,
             }))
-            ws.send(json.dumps({
+            ws.send(_json.dumps({
                 "action":  "subscribe",
                 "trades":  ADR_SYMBOLS,
             }))
@@ -130,14 +132,37 @@ class AlpacaClient:
     def stop_stream(self):
         self._running = False
 
-    def get_bars(self, symbols: list, timeframe: str = "4Hour", limit: int = 60) -> Dict[str, list]:
+    def get_bars(self, symbols: list, timeframe: str = "1Day", limit: int = 252) -> Dict[str, list]:
         """
         Descarga barras OHLCV para una lista de simbolos.
         Retorna dict {sym: [close, close, ...]} con los ultimos `limit` cierres.
-        Usado por el HMM para entrenarse sobre log-returns de barras 4H.
+
+        El lookback en dias se calcula dinamicamente segun el timeframe y limit,
+        para garantizar que siempre se obtengan suficientes barras.
+
+        Ejemplos:
+          get_bars(syms, "1Day",  252) → ~1 año de barras diarias
+          get_bars(syms, "4Hour", 252) → ~3 meses de barras 4H
+          get_bars(syms, "1Hour", 252) → ~6 semanas de barras 1H
         """
-        from datetime import timezone, timedelta
-        start = (datetime.now(timezone.utc) - timedelta(days=35)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Calcular cuántos días calendario necesitamos según el timeframe
+        # Se multiplica por 1.6 para cubrir fines de semana y feriados
+        if "Day" in timeframe:
+            dias_necesarios = int(limit * 1.6)       # 252 → 403 días (~13.5 meses)
+        elif "Hour" in timeframe:
+            try:
+                horas = int(timeframe.replace("Hour", "").replace("h", ""))
+            except ValueError:
+                horas = 1
+            # Mercado abre ~6.5h/día, ~5 días/semana → 6.5*5 = 32.5h/semana
+            dias_necesarios = int((limit * horas / 6.5) * 1.6) + 10
+        else:
+            dias_necesarios = limit * 2  # fallback conservador
+
+        start = (datetime.now(timezone.utc) - timedelta(days=dias_necesarios)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
         try:
             resp = requests.get(
                 f"{ALPACA_BASE_URL}/stocks/bars",
@@ -153,7 +178,12 @@ class AlpacaClient:
             )
             resp.raise_for_status()
             data = resp.json().get("bars", {})
-            return {sym: [b["c"] for b in bars] for sym, bars in data.items() if len(bars) >= 5}
+            result = {sym: [b["c"] for b in bars] for sym, bars in data.items() if len(bars) >= 5}
+            logger.info(
+                f"Alpaca bars ({timeframe}, {dias_necesarios}d lookback): "
+                f"{', '.join(f'{s}={len(v)}bars' for s, v in result.items())}"
+            )
+            return result
         except requests.RequestException as e:
             logger.error(f"Error Alpaca bars ({timeframe}): {e}")
             return {}
@@ -164,4 +194,3 @@ class AlpacaClient:
         if snaps:
             return {"ok": True, "msg": "Alpaca conectado OK", "sample": snaps}
         return {"ok": False, "msg": "Error conectando a Alpaca. Verificar API keys."}
-                    
