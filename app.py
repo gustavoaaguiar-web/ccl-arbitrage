@@ -18,6 +18,12 @@ MODELO DE CLIMA (Simons):
   Señal de compra = spread CCL favorable  AND  régimen bull en USD
   Señal de venta  = spread CCL desfavorable  (HMM no interviene)
 
+  IDENTIFICACIÓN DE ESTADO BULL:
+  Se usa el Sharpe del régimen (media/std) en lugar del argmax de medias puras.
+  Esto evita el state-flip: en mercados volátiles o bajistas con rebotes violentos,
+  el estado BEAR puede tener una media matemática temporalmente más alta que el BULL,
+  pero siempre tendrá mayor varianza. El ratio media/std es robusto a ese fenómeno.
+
 HISTORIAL HMM:
   El historial de precios USD se persiste en Google Sheets (HMM_Historial)
   con un rolling window de 500 snapshots (~1.5 días de trading a 60s/ciclo).
@@ -130,7 +136,7 @@ HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
 def _fetch_barras_4h():
     """
-    Descarga barras 4H via AlpacaClient para todos los simbolos USD en PARES.
+    Descarga barras 1D via AlpacaClient para todos los simbolos USD en PARES.
     Retorna dict {sym_usd: [close, close, ...]} o {} si falla.
     """
     alpaca   = st.session_state.get("alpaca")
@@ -140,7 +146,7 @@ def _fetch_barras_4h():
     return alpaca.get_bars(syms_usd, timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
 
 def _refrescar_barras_si_necesario():
-    """Refresca el cache de barras 4H si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
+    """Refresca el cache de barras 1D si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
     ahora  = hora_argentina()
     ultimo = st.session_state.get("hmm_barras_ts")
     if ultimo is None or (ahora - ultimo).seconds >= HMM_BARRAS_REFRESH_MIN * 60:
@@ -148,24 +154,44 @@ def _refrescar_barras_si_necesario():
         if barras:
             st.session_state["hmm_barras"]    = barras
             st.session_state["hmm_barras_ts"] = ahora
-            logger.info(f"HMM 4H: barras actualizadas para {list(barras.keys())}")
+            logger.info(f"HMM 1D: barras actualizadas para {list(barras.keys())}")
 
 def clima_hmm(sym, historial=None):
     """
     Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
-    Usa barras 4H de Alpaca (cache de 30 min).
+    Usa barras 1D de Alpaca (cache de 10 min).
+
+    Identificacion de estado BULL por Sharpe del regimen (media/std),
+    no por argmax de medias puras. Evita state-flip en mercados volatiles
+    donde el estado BEAR puede tener media matematica mas alta por rebotes
+    violentos, pero siempre tendra mayor varianza que el estado BULL.
+
+    Requiere minimo 63 barras (1 trimestre) para HMM estadisticamente estable.
     """
     sym_usd = PARES[sym][0]
     barras  = st.session_state.get("hmm_barras", {})
     precios = barras.get(sym_usd, [])
-    if len(precios) < 5:
+
+    # Minimo 63 barras (1 trimestre) para HMM estable
+    # Con menos datos el modelo sobreajusta o no converge correctamente
+    if len(precios) < 63:
         return "🔴"
+
     try:
         from hmmlearn.hmm import GaussianHMM
-        ret    = np.diff(np.log(precios)).reshape(-1, 1)
-        m      = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
+        ret = np.diff(np.log(precios)).reshape(-1, 1)
+        m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
+
+        # Identificar BULL por Sharpe del estado (media / std de cada regimen)
+        # Evita que un crash con rebotes violentos se etiquete erroneamente como BULL
+        # El estado BULL tiene retornos positivos constantes (alta media, baja varianza)
+        # El estado BEAR tiene alta volatilidad aunque su media puntual pueda ser alta
+        means   = m.means_.flatten()
+        stds    = np.sqrt(m.covars_.flatten())
+        sharpes = np.where(stds > 1e-8, means / stds, -np.inf)
+        bull    = int(np.argmax(sharpes))
+
         estado = m.predict(ret)[-1]
-        bull   = np.argmax(m.means_.flatten())
         return "🟢" if estado == bull else "🔴"
     except:
         return "🔴"
@@ -281,7 +307,7 @@ def main():
     hora      = hora_argentina()
     ahora     = hora.time()
 
-    # Refrescar barras 1D para HMM (cada 30 min, no cada 60s)
+    # Refrescar barras 1D para HMM (cada 10 min, no cada 60s)
     _refrescar_barras_si_necesario()
 
     # Warmup: los primeros 2 ciclos no se opera para estabilizar HMM y precios
@@ -455,7 +481,6 @@ def main():
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     # ── Posiciones abiertas ────────────────────────────────
-        # ── POSICIONES ABIERTAS (CON VALIDACIÓN ANTI-ERROR) ────────
     if any(sim.posiciones.values()):
         st.subheader("💼 Posiciones Abiertas")
         for sym, poss in sim.posiciones.items():
@@ -474,7 +499,7 @@ def main():
                 pnl_pct = ((precio_actual / p_entry) - 1) * 100
 
                 emoji = "✅" if pnl >= 0 else "🔻"
-                
+
                 # 2. KEY ÚNICA: Combinamos ID y Símbolo para evitar DuplicateElementKey
                 with st.expander(f"{emoji} {p_id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%)", expanded=True):
                     c1, c2, c3, c4 = st.columns(4)
@@ -494,7 +519,6 @@ def main():
                         st.success(f"✅ Venta registrada para {sym}")
                         time.sleep(1)
                         st.rerun()
-
 
     # ── Historial ops ──────────────────────────────────────
     with st.expander("📜 Historial de Operaciones"):
