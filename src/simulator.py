@@ -11,7 +11,7 @@ Simulador de Arbitraje CCL
 CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
   [C] PnL precio ≤ -0.80%                          → stop loss duro
   [A] desvío CCL ≥ +0.10%                          → reversión completa del spread
-  [B] dev alguna vez ≥ 0%  AND  pnl_max ≥ +0.30%
+  [B] dev alguna vez ≥ 0%  AND  pnl_max ≥ +0.50%
       AND  caída desde pico ≥ 0.25%                → trailing con ganancia confirmada
   [D] PnL precio ≥ +2.40%                          → take profit puro
 
@@ -254,7 +254,7 @@ class Simulador:
     ) -> Operacion:
         monto_exit = pos.cantidad * precio_ars
         pnl        = monto_exit - pos.monto_entry
-        pnl_pct    = (pnl / pos.monto_entry) * 100
+        pnl_pct    = (pnl / pos.monto_entry) * 100 if pos.monto_entry else 0  # FIX: guard div/0
 
         self.efectivo += monto_exit
 
@@ -313,6 +313,8 @@ class Simulador:
         # 2. Actualizar precios, PnL y pico máximo de cada posición abierta
         for sym, poss in self.posiciones.items():
             precio = precios_ars.get(sym, 0)
+            if precio <= 0:                   # FIX: precio 0/None de IOL → no tocar PnL
+                continue
             for pos in poss:
                 pos.precio_actual = precio
                 pos.pnl     = (precio - pos.precio_entry) * pos.cantidad
@@ -326,7 +328,7 @@ class Simulador:
             if not self.posiciones[symbol]:
                 continue
             ccl = ccl_map.get(symbol, 0)
-            if ccl_avg == 0:
+            if ccl <= 0 or ccl_avg == 0:      # FIX: ccl=0 daría dev=-100% y dispararía stop loss
                 continue
             dev    = (ccl / ccl_avg - 1) * 100
             precio = precios_ars.get(symbol, 0)
