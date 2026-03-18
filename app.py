@@ -29,6 +29,11 @@ HISTORIAL HMM:
   con un rolling window de 500 snapshots (~1.5 días de trading a 60s/ciclo).
   Esto garantiza que el HMM arranque con historia aunque la app se reinicie.
 
+FETCH DE BARRAS:
+  Se fetchea símbolo por símbolo (no en batch) para garantizar que Alpaca
+  retorne exactamente `limit` barras por símbolo. El endpoint multi-símbolo
+  reparte el limit entre todos, resultando en pocas barras por símbolo.
+
 PENDIENTE (dinero real):
 - Lógica de órdenes IOL (compra/venta)
 - Manejo de puntas y precio límite
@@ -121,45 +126,58 @@ def init_state():
         st.session_state.sim      = sim
         st.session_state.gmail    = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
         st.session_state.alertadas    = {}
-        st.session_state.ciclos_warmup = 0   # ciclos iniciales sin operar
+        st.session_state.ciclos_warmup = 0
         st.session_state.ready         = True
     return True
 
 # ── HMM — MODELO SIMONS (barras 1D) ──────────────────────
-# Entrena sobre log-returns de barras 1D del precio USD del subyacente.
-# Las barras 1D tienen suficiente señal para distinguir regímenes bull/bear,
-# a diferencia de los snapshots de 60s que son esencialmente ruido blanco.
-# Cache en session_state["hmm_barras"] — se refresca cada 10 minutos.
-
 HMM_BARRAS_REFRESH_MIN = 10   # refrescar barras cada N minutos
 HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
-def _fetch_barras_4h():
+def _fetch_barras_1d():
     """
     Descarga barras 1D via AlpacaClient para todos los simbolos USD en PARES.
+
+    IMPORTANTE: se fetchea simbolo por simbolo, NO en batch.
+    El endpoint multi-simbolo de Alpaca interpreta `limit` como total entre
+    todos los simbolos, resultando en ~12 barras por simbolo con 20 simbolos.
+    Fetching individual garantiza exactamente `limit` barras por simbolo.
+
     Retorna dict {sym_usd: [close, close, ...]} o {} si falla.
     """
-    alpaca   = st.session_state.get("alpaca")
+    alpaca = st.session_state.get("alpaca")
     if not alpaca:
         return {}
-    syms_usd = list({v[0] for v in PARES.values()})
-    return alpaca.get_bars(syms_usd, timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
+
+    syms_usd  = list({v[0] for v in PARES.values()})
+    resultado = {}
+
+    for sym in syms_usd:
+        barras = alpaca.get_bars([sym], timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
+        if sym in barras:
+            resultado[sym] = barras[sym]
+            logger.info(f"HMM fetch: {sym} → {len(barras[sym])} barras")
+        else:
+            logger.warning(f"HMM fetch: {sym} → sin datos")
+
+    return resultado
 
 def _refrescar_barras_si_necesario():
     """Refresca el cache de barras 1D si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
     ahora  = hora_argentina()
     ultimo = st.session_state.get("hmm_barras_ts")
     if ultimo is None or (ahora - ultimo).seconds >= HMM_BARRAS_REFRESH_MIN * 60:
-        barras = _fetch_barras_4h()
+        barras = _fetch_barras_1d()
         if barras:
             st.session_state["hmm_barras"]    = barras
             st.session_state["hmm_barras_ts"] = ahora
-            logger.info(f"HMM 1D: barras actualizadas para {list(barras.keys())}")
+            conteo = {s: len(b) for s, b in barras.items()}
+            logger.info(f"HMM 1D: barras actualizadas → {conteo}")
 
 def clima_hmm(sym, historial=None):
     """
     Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
-    Usa barras 1D de Alpaca (cache de 10 min).
+    Usa barras 1D de Alpaca fetched individualmente (cache de 10 min).
 
     Identificacion de estado BULL por Sharpe del regimen (media/std),
     no por argmax de medias puras. Evita state-flip en mercados volatiles
@@ -172,8 +190,6 @@ def clima_hmm(sym, historial=None):
     barras  = st.session_state.get("hmm_barras", {})
     precios = barras.get(sym_usd, [])
 
-    # Minimo 63 barras (1 trimestre) para HMM estable
-    # Con menos datos el modelo sobreajusta o no converge correctamente
     if len(precios) < 63:
         return "🔴"
 
@@ -182,10 +198,6 @@ def clima_hmm(sym, historial=None):
         ret = np.diff(np.log(precios)).reshape(-1, 1)
         m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
 
-        # Identificar BULL por Sharpe del estado (media / std de cada regimen)
-        # Evita que un crash con rebotes violentos se etiquete erroneamente como BULL
-        # El estado BULL tiene retornos positivos constantes (alta media, baja varianza)
-        # El estado BEAR tiene alta volatilidad aunque su media puntual pueda ser alta
         means   = m.means_.flatten()
         stds    = np.sqrt(m.covars_.flatten())
         sharpes = np.where(stds > 1e-8, means / stds, -np.inf)
@@ -311,7 +323,6 @@ def main():
     _refrescar_barras_si_necesario()
 
     # Warmup: los primeros 2 ciclos no se opera para estabilizar HMM y precios
-    # Evita que el primer ciclo post-arranque abra posiciones con climas recién cargados
     WARMUP_CICLOS = 2
     if 'ciclos_warmup' not in st.session_state:
         st.session_state.ciclos_warmup = 0
@@ -324,14 +335,9 @@ def main():
     ccl_map, ccl_avg = calcular_ccl(p_ars, p_usd)
 
     if ccl_map:
-        # Guardar CCL + precios USD en el snapshot para que el HMM
-        # tenga histórico de log-returns USD (modelo Simons).
-        # Rolling window: mantener solo los últimos HMM_MAX_SNAPSHOTS en memoria.
         historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg, "usd": p_usd})
         if len(historial) > HMM_MAX_SNAPSHOTS:
             historial[:] = historial[-HMM_MAX_SNAPSHOTS:]
-
-        # Persistir en Sheets — p_usd se guarda en HMM_Historial (rolling)
         sheets.guardar_snapshot_ccl(ccl_map, ccl_avg, p_usd=p_usd)
 
     # ── Señales y climas ───────────────────────────────────
@@ -341,7 +347,6 @@ def main():
         clima = clima_hmm(sym, historial)
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
-        # Desvío CCL — verde si ≤ -0.5% independientemente del clima
         if dev <= -0.5:
             desvio_color = "🟢"
         elif dev >= 0.1:
@@ -349,10 +354,6 @@ def main():
         else:
             desvio_color = "🟡"
 
-        # Acción — combina desvío + clima
-        # 🚀 COMPRA: spread favorable Y clima BULL (lo que ejecuta el simulador)
-        # 🪙 VENTA:  spread revertido (desvío ≥ +0.10%) — solo aplica si hay posición abierta
-        # ⏳ ESPERAR: cualquier otro caso
         if dev <= -0.5 and clima == "🟢":
             accion = "🚀 COMPRA"
         elif dev >= 0.1:
@@ -366,7 +367,6 @@ def main():
             "p_ars": p_ars.get(sym, 0),
             "p_usd": p_usd.get(PARES[sym][0], 0),
         })
-        # Alertas: COMPRA siempre, VENTA solo si hay posición abierta en ese símbolo
         if accion == "🚀 COMPRA":
             señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
         elif accion == "🔴 VENTA":
@@ -375,13 +375,11 @@ def main():
 
     # ── Simulador ──────────────────────────────────────────
     if HORA_APERTURA <= ahora:
-        # Durante warmup, pasar ahora=None hace que el sim use datetime.now() internamente
-        # pero bloqueamos compras pasando una hora fuera de ventana si estamos en warmup
-        ahora_sim = dtime(0, 0) if en_warmup else ahora  # 00:00 = fuera de ventana de compra
+        ahora_sim = dtime(0, 0) if en_warmup else ahora
         resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora_sim)
         ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
         ops_abiertas = resultado.get("abiertas", [])
-        hay_cambios = bool(ops_abiertas or ops_cerradas)
+        hay_cambios  = bool(ops_abiertas or ops_cerradas)
 
         for op in ops_cerradas:
             sheets.guardar_operacion(sim.fila_sheets_operacion(op))
@@ -403,7 +401,7 @@ def main():
         #     iol.place_order(
         #         symbol   = pos.symbol,
         #         cantidad = pos.cantidad,
-        #         precio   = pos.precio_entry,   # ajustar a lógica de puntas
+        #         precio   = pos.precio_entry,
         #         tipo     = "compra",
         #         mercado  = "bCBA",
         #     )
@@ -413,13 +411,10 @@ def main():
         #         iol.place_order(
         #             symbol   = op.symbol,
         #             cantidad = op.cantidad,
-        #             precio   = op.precio_exit,  # ajustar a lógica de puntas
+        #             precio   = op.precio_exit,
         #             tipo     = "venta",
         #             mercado  = "bCBA",
         #         )
-        #
-        # La lógica de filtrado HMM ya está correcta en simulator.py,
-        # no hace falta tocarla. Solo descomentar y ajustar puntas/límites.
         # ──────────────────────────────────────────────────
 
     alerta_señales(señales_alerta, ccl_avg)
@@ -485,30 +480,26 @@ def main():
         st.subheader("💼 Posiciones Abiertas")
         for sym, poss in sim.posiciones.items():
             for pos in poss:
-                # 1. VALIDACIÓN: Si la posición no tiene precio o monto, la saltamos
                 p_entry = getattr(pos, 'precio_entry', 0)
                 m_entry = getattr(pos, 'monto_entry', 0)
-                p_id = getattr(pos, 'id', 'S/N')
+                p_id    = getattr(pos, 'id', 'S/N')
 
                 if p_entry <= 0 or m_entry <= 0:
                     st.warning(f"⚠️ Dato inválido en {sym} (ID: {p_id}). Revisar Google Sheets.")
                     continue
 
                 precio_actual = p_ars.get(sym, p_entry)
-                pnl = (precio_actual - p_entry) * pos.cantidad
+                pnl     = (precio_actual - p_entry) * pos.cantidad
                 pnl_pct = ((precio_actual / p_entry) - 1) * 100
+                emoji   = "✅" if pnl >= 0 else "🔻"
 
-                emoji = "✅" if pnl >= 0 else "🔻"
-
-                # 2. KEY ÚNICA: Combinamos ID y Símbolo para evitar DuplicateElementKey
                 with st.expander(f"{emoji} {p_id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%)", expanded=True):
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Entrada", f"${p_entry:,.1f}")
-                    c2.metric("Actual", f"${precio_actual:,.1f}", f"{pnl_pct:+.2f}%")
+                    c1.metric("Entrada",   f"${p_entry:,.1f}")
+                    c2.metric("Actual",    f"${precio_actual:,.1f}", f"{pnl_pct:+.2f}%")
                     c3.metric("Invertido", f"${m_entry:,.0f}")
-                    c4.metric("Cantidad", f"{pos.cantidad:.2f} u.")
+                    c4.metric("Cantidad",  f"{pos.cantidad:.2f} u.")
 
-                    # Botón con identificador único reforzado
                     btn_key = f"v_manual_{p_id}_{sym}_{int(p_entry)}"
                     if st.button(f"🔴 Vender {sym} ({p_id})", key=btn_key, type="primary"):
                         op = sim.cerrar_posicion(sym, pos, precio_actual, "VENTA_MANUAL")
@@ -538,6 +529,18 @@ def main():
         st.title("⚙️ Config")
         st.markdown(f"**Snapshots HMM:** {len(historial)}")
         st.markdown(f"**Actualizado:** {hora.strftime('%H:%M:%S')}")
+
+        # Debug barras HMM: muestra cuántas barras tiene cada símbolo en cache.
+        # ✅ = >= 63 barras (HMM activo)  |  ⚠️ = < 63 (HMM fallback 🔴)
+        barras_cache = st.session_state.get("hmm_barras", {})
+        if barras_cache:
+            ts_cache = st.session_state.get("hmm_barras_ts")
+            ts_str   = ts_cache.strftime("%H:%M:%S") if ts_cache else "—"
+            with st.expander(f"📊 Barras HMM ({ts_str})", expanded=False):
+                for s, b in sorted(barras_cache.items()):
+                    icono = "✅" if len(b) >= 63 else "⚠️"
+                    st.caption(f"{icono} {s:<6} {len(b)} barras")
+
         st.divider()
         st.markdown("**Simulador**")
         st.markdown(f"Capital inicial: $10.000.000")
