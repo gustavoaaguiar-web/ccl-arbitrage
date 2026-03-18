@@ -189,6 +189,12 @@ def clima_hmm(sym, historial=None):
     "quieto" (returns ~0, std muy baja) tiene Sharpe artificialmente alto
     y era incorrectamente clasificado como BULL.
 
+    RETORNO INTRADIARIO: el modelo se entrena solo con cierres historicos
+    (sin look-ahead), pero al predecir se agrega el retorno de hoy
+    (precio actual vs ultimo cierre) como ultima observacion. Esto permite
+    que movimientos fuertes del dia corriente (como +2% en YPF) sean
+    considerados al clasificar el regimen actual.
+
     Requiere minimo 63 barras (1 trimestre) para HMM estadisticamente estable.
     """
     sym_usd = PARES[sym][0]
@@ -200,8 +206,10 @@ def clima_hmm(sym, historial=None):
 
     try:
         from hmmlearn.hmm import GaussianHMM
-        ret = np.diff(np.log(precios)).reshape(-1, 1)
-        m   = GaussianHMM(n_components=2, random_state=42, n_iter=200).fit(ret)
+
+        # Entrenar solo con cierres historicos (sin look-ahead)
+        ret_hist = np.diff(np.log(precios)).reshape(-1, 1)
+        m = GaussianHMM(n_components=2, random_state=42, n_iter=200).fit(ret_hist)
 
         means = m.means_.flatten()
         bull  = int(np.argmax(means))
@@ -211,7 +219,18 @@ def clima_hmm(sym, historial=None):
         if means[bull] < -0.0005:
             return "🔴"
 
-        estado = m.predict(ret)[-1]
+        # Predecir incluyendo retorno intradiario de hoy si esta disponible
+        # precio actual (snapshot Alpaca) vs ultimo cierre historico
+        ret_pred = ret_hist.copy()
+        if historial:
+            precio_actual = historial[-1].get("usd", {}).get(sym_usd)
+            ultimo_cierre = precios[-1]
+            if precio_actual and ultimo_cierre > 0:
+                ret_hoy = np.log(precio_actual / ultimo_cierre)
+                ret_pred = np.vstack([ret_hist, [[ret_hoy]]])
+                logger.info(f"HMM {sym_usd}: ret_hoy={ret_hoy:+.4f} ({precio_actual:.2f} vs cierre {ultimo_cierre:.2f})")
+
+        estado = m.predict(ret_pred)[-1]
         return "🟢" if estado == bull else "🔴"
     except:
         return "🔴"
