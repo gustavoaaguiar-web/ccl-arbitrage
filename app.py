@@ -19,10 +19,12 @@ MODELO DE CLIMA (Simons):
   Señal de venta  = spread CCL desfavorable  (HMM no interviene)
 
   IDENTIFICACIÓN DE ESTADO BULL:
-  Se usa el Sharpe del régimen (media/std) en lugar del argmax de medias puras.
-  Esto evita el state-flip: en mercados volátiles o bajistas con rebotes violentos,
-  el estado BEAR puede tener una media matemática temporalmente más alta que el BULL,
-  pero siempre tendrá mayor varianza. El ratio media/std es robusto a ese fenómeno.
+  Se usa argmax de medias puras para identificar el estado bull.
+  Guard adicional: si la media más alta es negativa, ambos estados son
+  bajistas (mercado bear con rebotes violentos) y se retorna 🔴.
+  Esto evita el problema del Sharpe: para activos ilíquidos, el estado
+  "quieto" (returns ~0, std muy baja) tiene Sharpe artificialmente alto
+  y era clasificado como BULL aunque el mercado no lo fuera.
 
 HISTORIAL HMM:
   El historial de precios USD se persiste en Google Sheets (HMM_Historial)
@@ -179,10 +181,13 @@ def clima_hmm(sym, historial=None):
     Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
     Usa barras 1D de Alpaca fetched individualmente (cache de 10 min).
 
-    Identificacion de estado BULL por Sharpe del regimen (media/std),
-    no por argmax de medias puras. Evita state-flip en mercados volatiles
-    donde el estado BEAR puede tener media matematica mas alta por rebotes
-    violentos, pero siempre tendra mayor varianza que el estado BULL.
+    Identificacion de estado BULL por argmax de medias puras.
+    Guard: si la media mas alta es negativa, ambos estados son bajistas
+    (mercado bear con rebotes) y se retorna rojo directamente.
+
+    Esto evita el problema del Sharpe en activos iliquidos: el estado
+    "quieto" (returns ~0, std muy baja) tiene Sharpe artificialmente alto
+    y era incorrectamente clasificado como BULL.
 
     Requiere minimo 63 barras (1 trimestre) para HMM estadisticamente estable.
     """
@@ -198,10 +203,13 @@ def clima_hmm(sym, historial=None):
         ret = np.diff(np.log(precios)).reshape(-1, 1)
         m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
 
-        means   = m.means_.flatten()
-        stds    = np.sqrt(m.covars_.flatten())
-        sharpes = np.where(stds > 1e-8, means / stds, -np.inf)
-        bull    = int(np.argmax(sharpes))
+        means = m.means_.flatten()
+        bull  = int(np.argmax(means))
+
+        # Si la media del estado "bull" es negativa, ambos estados son
+        # bajistas (mercado bear con rebotes violentos, no bull genuino)
+        if means[bull] < -0.0005:
+            return "🔴"
 
         estado = m.predict(ret)[-1]
         return "🟢" if estado == bull else "🔴"
