@@ -1,6 +1,16 @@
 """
 Modelo HMM (Hidden Markov Model) para determinar el "clima" del mercado.
 
+⚠️  ADVERTENCIA ARQUITECTÓNICA — NO USAR JUNTO CON clima_hmm() DE app.py
+    Este módulo entrena el HMM sobre desvíos del CCL (retorno medio de devs).
+    El modelo activo en app.py (función clima_hmm) entrena sobre log-returns
+    del precio USD del subyacente (Alpaca). Ambos enfoques son INCOMPATIBLES:
+    usar este módulo en paralelo genera multicolinealidad con la señal de entrada,
+    ya que los desvíos CCL son exactamente la variable que se usa como señal de compra.
+
+    Este archivo se conserva como referencia / experimento alternativo.
+    El modelo en producción es clima_hmm() en app.py.
+
 Estados ocultos:
     0 → BULL  (mercado alcista, alta volatilidad positiva)
     1 → BEAR  (mercado bajista, alta volatilidad negativa)
@@ -29,6 +39,8 @@ class HMMMarketModel:
     HMM Gaussiano para clasificar el clima de mercado.
     Usa hmmlearn.GaussianHMM internamente.
     Funciona con mínimo ~20 observaciones de historial.
+
+    ⚠️  Ver advertencia en el encabezado del módulo antes de usar.
     """
 
     def __init__(self, n_states: int = 3, n_iter: int = 100):
@@ -155,4 +167,3 @@ class HMMMarketModel:
             2: "Mercado LATERAL: reducir tamaño de posición. Esperar confirmación.",
         }
         return recs.get(state_id, "Sin recomendación disponible.")
-      
