@@ -6,11 +6,13 @@ filtro HMM para capturar subidas de precio en los activos del portafolio.
 
 Metodología:
   Para cada frecuencia y cada símbolo:
-    1. Descargar historial de barras de Alpaca (últimos 60 días)
+    1. Descargar historial de barras de Alpaca (últimos N días según frecuencia)
     2. Entrenar HMM de 2 estados sobre log-returns
-    3. Etiquetar cada barra como BULL o BEAR
-    4. Medir el retorno forward (próximas N barras) en cada estado
-    5. Calcular: media BULL vs BEAR, hit rate, ratio señal/ruido
+    3. Identificar estado BULL por Sharpe del régimen (media/std), no por argmax
+       de medias puras — evita state-flip en mercados volátiles con rebotes
+    4. Etiquetar cada barra como BULL o BEAR
+    5. Medir el retorno forward (próximas N barras) en cada estado
+    6. Calcular: media BULL vs BEAR, hit rate, ratio señal/ruido
 
 Resultado: tabla comparativa de frecuencias + recomendación.
 """
@@ -103,15 +105,31 @@ def fetch_barras(sym_usd: str, timeframe: str, dias: int) -> pd.DataFrame:
 def entrenar_hmm(closes: np.ndarray):
     """
     Entrena GaussianHMM de 2 estados sobre log-returns.
+
+    Identifica el estado BULL por Sharpe del régimen (media/std),
+    no por argmax de medias puras. Esto evita el state-flip:
+    en mercados bajistas con rebotes violentos, el estado BEAR puede
+    tener una media matemática temporalmente más alta, pero siempre
+    tendrá mayor varianza. El ratio media/std es robusto a ese fenómeno.
+
     Retorna (estados, bull_state, modelo) o None si falla.
     """
     try:
         from hmmlearn.hmm import GaussianHMM
-        ret    = np.diff(np.log(closes)).reshape(-1, 1)
-        m      = GaussianHMM(n_components=2, random_state=42, n_iter=200,
-                              covariance_type="full").fit(ret)
+        ret     = np.diff(np.log(closes)).reshape(-1, 1)
+        m       = GaussianHMM(n_components=2, random_state=42, n_iter=200,
+                               covariance_type="full").fit(ret)
         estados = m.predict(ret)
-        bull    = int(np.argmax(m.means_.flatten()))
+
+        # Identificar BULL por Sharpe del estado, no por media pura
+        means   = m.means_.flatten()
+        stds    = np.sqrt(m.covars_.flatten() if m.covariance_type == "full"
+                          else m.covars_.flatten())
+        # Para covariance_type="full" con 1 feature, covars_ tiene shape (n,1,1)
+        stds    = np.sqrt(np.array([m.covars_[i][0][0] for i in range(m.n_components)]))
+        sharpes = np.where(stds > 1e-8, means / stds, -np.inf)
+        bull    = int(np.argmax(sharpes))
+
         return estados, bull, m
     except Exception as e:
         return None
@@ -288,7 +306,7 @@ for i, (_, row) in enumerate(resumen.iterrows()):
                    f"Bear: {row['Media_BEAR']:+.4f}% | Sep: {row['Separacion']:+.4f}%\n"
                    f"% tiempo BULL: {row['Pct_BULL']:.1f}%")
 
-# ── Gráfico: separación por frecuencia ────────────────────
+# ── Gráfico: Sharpe por frecuencia ────────────────────────
 st.markdown("---")
 st.subheader("🔬 Sharpe BULL por Frecuencia")
 st.caption("Sharpe BULL = Media/σ de retornos en estado BULL. Métrica correcta para long-only (no long/short).")
@@ -418,8 +436,8 @@ st.markdown("---")
 st.subheader("💡 Recomendación")
 
 row_mejor = resumen[resumen["Frecuencia"] == mejor_tf].iloc[0]
-sep_val   = row_mejor["Separacion"]
-hr_val    = row_mejor["Hit_Rate"]
+sep_val    = row_mejor["Separacion"]
+hr_val     = row_mejor["Hit_Rate"]
 sharpe_val = row_mejor["Sharpe"]
 
 if hr_val >= 55 and sharpe_val > 0.05:
