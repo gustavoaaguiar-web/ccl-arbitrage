@@ -282,13 +282,17 @@ class Simulador:
     def cerrar_todas(self, precios_ars: Dict[str, float], motivo: str = "CIERRE_FORZADO"):
         cerradas = []
         for symbol in list(self.posiciones.keys()):
-            precio = precios_ars.get(symbol, 0)
-            if precio <= 0:
-                continue
             for pos in list(self.posiciones[symbol]):
+                # Fallback si IOL ya cerro y no devuelve precio a las 16:50
+                precio = precios_ars.get(symbol, 0)
+                if precio <= 0:
+                    precio = pos.precio_actual   # ultimo precio visto en el ciclo anterior
+                if precio <= 0:
+                    precio = pos.precio_entry    # ultimo recurso: precio de entrada
+                    logger.warning(f"CIERRE_FORZADO {symbol}: sin precio, usando entry ${precio:.2f}")
                 op = self.cerrar_posicion(symbol, pos, precio, motivo)
                 cerradas.append(op)
-            self.posiciones[symbol] = []
+            self.posiciones[symbol] = []         # siempre limpiar, con o sin precio
         return cerradas
 
     # ──────────────────── CICLO PRINCIPAL ────────────────
