@@ -201,7 +201,7 @@ def clima_hmm(sym, historial=None):
     try:
         from hmmlearn.hmm import GaussianHMM
         ret = np.diff(np.log(precios)).reshape(-1, 1)
-        m   = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
+        m   = GaussianHMM(n_components=2, random_state=42, n_iter=200).fit(ret)
 
         means = m.means_.flatten()
         bull  = int(np.argmax(means))
