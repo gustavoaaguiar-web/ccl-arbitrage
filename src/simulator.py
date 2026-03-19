@@ -13,7 +13,7 @@ CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
   [A] desvío CCL ≥ +0.10%                          → reversión completa del spread
   [B] dev alguna vez ≥ 0%  AND  pnl_max ≥ +0.50%
       AND  caída desde pico ≥ 0.25%                → trailing con ganancia confirmada
-  [D] PnL precio ≥ +2.40%                          → take profit puro
+  [D] PnL precio ≥ +1.60%                          → take profit puro
 
 MODELO DE CLIMA (Simons):
   El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
@@ -51,7 +51,7 @@ UMBRAL_VENTA_A_PNL      = 1.00   # PnL precio mínimo para Salida A (%)
 UMBRAL_VENTA_B_DEV      = 0.00   # desvío CCL histórico — [B] spread alguna vez neutro (%)
 UMBRAL_VENTA_B_PNL_MIN  = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
 UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
-TAKE_PROFIT_D           = 2.40   # PnL precio — [D] take profit puro (%)
+TAKE_PROFIT_D           = 1.60   # PnL precio — [D] take profit puro (%)
 STOP_LOSS_C             = -0.80  # PnL precio — [C] stop loss duro (%)
 
 
