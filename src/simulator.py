@@ -10,9 +10,8 @@ Simulador de Arbitraje CCL
 
 CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
   [C] PnL precio ≤ -0.80%                          → stop loss duro
-  [A] desvío CCL ≥ +0.10%                          → reversión completa del spread
-  [B] dev alguna vez ≥ 0%  AND  pnl_max ≥ +0.50%
-      AND  caída desde pico ≥ 0.25%                → trailing con ganancia confirmada
+  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +1.00%  → spread revertido con ganancia
+  [B] pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25%  → trailing con ganancia confirmada
   [D] PnL precio ≥ +1.60%                          → take profit puro
 
 MODELO DE CLIMA (Simons):
@@ -46,9 +45,9 @@ MAX_POSICIONES_POR_ESPECIE = 2
 UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_A          = 0.15   # desvío CCL — [A] reversión spread (%)
+UMBRAL_VENTA_A          = 0.00   # desvío CCL — [A] reversión spread (%)
 UMBRAL_VENTA_A_PNL      = 1.00   # PnL precio mínimo para Salida A (%)
-UMBRAL_VENTA_B_DEV      = 0.00   # desvío CCL histórico — [B] spread alguna vez neutro (%)
+# UMBRAL_VENTA_B_DEV eliminado — Salida B ya no requiere condición de desvío CCL
 UMBRAL_VENTA_B_PNL_MIN  = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
 UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
 TAKE_PROFIT_D           = 1.60   # PnL precio — [D] take profit puro (%)
@@ -156,8 +155,7 @@ class Simulador:
         Orden de prioridad:
           1. [C] Stop loss duro         → pnl_pct ≤ -0.80%
           2. [A] Reversión del spread   → dev ≥ +0.10% AND pnl_pct ≥ +1.00%
-          3. [B] Trailing confirmado    → dev_max ≥ 0%  AND  pnl_max ≥ +0.50%
-                                          AND  caída desde pico ≥ 0.25%
+          3. [B] Trailing confirmado    → pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25%
           4. [D] Take profit puro       → pnl_pct ≥ +2.40%
 
         Todos los flags históricos (dev_max_alcanzado, pnl_max_pct) se
@@ -180,11 +178,9 @@ class Simulador:
             return "SALIDA_A"
 
         # [B] Trailing con ganancia confirmada:
-        #   - El spread alguna vez se neutralizó (dev_max_alcanzado ≥ 0%)
         #   - El precio llegó a ganar al menos +0.50% en algún momento
         #   - Desde ese pico el precio cayó ≥ 0.25%
-        if (pos.dev_max_alcanzado >= UMBRAL_VENTA_B_DEV
-                and pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN):
+        if pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN:
             caida_desde_pico = pos.pnl_max_pct - pnl_pct
             if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
                 return "SALIDA_B"
