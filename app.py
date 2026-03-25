@@ -129,6 +129,7 @@ def init_state():
         st.session_state.gmail    = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
         st.session_state.alertadas    = {}
         st.session_state.ciclos_warmup = 0
+        st.session_state.ops_guardadas = set()  # IDs ya guardados en Sheets — evita duplicados por rerun
         st.session_state.ready         = True
     return True
 
@@ -409,7 +410,9 @@ def main():
         hay_cambios  = bool(ops_abiertas or ops_cerradas)
 
         for op in ops_cerradas:
-            sheets.guardar_operacion(sim.fila_sheets_operacion(op))
+            if op.id not in st.session_state.ops_guardadas:
+                sheets.guardar_operacion(sim.fila_sheets_operacion(op))
+                st.session_state.ops_guardadas.add(op.id)
 
         ciclo_actual = int(time.time() // REFRESH_SECONDS)
         if hay_cambios or ciclo_actual % 5 == 0:
