@@ -125,6 +125,7 @@ def init_state():
         sim = Simulador()
         sh.cargar_estado_simulador(sim)
         sh.cargar_posiciones(sim)
+        st.session_state.sim = sim  # FIX: asignar sim a session_state
 
         # FIX: pre-poblar ops_guardadas desde Sheets al arrancar.
         # Usa clave compuesta (id, ts_entry) porque _op_counter se resetea
