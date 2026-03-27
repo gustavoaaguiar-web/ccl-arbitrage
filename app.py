@@ -125,11 +125,24 @@ def init_state():
         sim = Simulador()
         sh.cargar_estado_simulador(sim)
         sh.cargar_posiciones(sim)
-        st.session_state.sim      = sim
-        st.session_state.gmail    = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
+
+        # FIX: pre-poblar ops_guardadas desde Sheets al arrancar.
+        # Usa clave compuesta (id, ts_entry) porque _op_counter se resetea
+        # cada jornada y el mismo ID puede repetirse en días distintos.
+        # Esto evita que un reinicio de la app vuelva a guardar operaciones
+        # que ya estaban escritas en Sheets antes del crash.
+        try:
+            ops_existentes = sh.cargar_operaciones()
+            st.session_state.ops_guardadas = {
+                (fila[0], fila[10]) for fila in ops_existentes  # [0]=id, [10]=ts_entry
+            }
+        except Exception as e:
+            logger.warning(f"No se pudo pre-cargar ops_guardadas: {e}")
+            st.session_state.ops_guardadas = set()
+
+        st.session_state.gmail        = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
         st.session_state.alertadas    = {}
         st.session_state.ciclos_warmup = 0
-        st.session_state.ops_guardadas = set()  # IDs ya guardados en Sheets — evita duplicados por rerun
         st.session_state.ready         = True
     return True
 
@@ -409,10 +422,14 @@ def main():
         ops_abiertas = resultado.get("abiertas", [])
         hay_cambios  = bool(ops_abiertas or ops_cerradas)
 
+        # FIX: guard con clave compuesta (id, ts_entry) para sobrevivir reinicios.
+        # El _op_counter se resetea cada jornada, por lo que el mismo ID (ej. P0001)
+        # puede aparecer en días distintos. La clave compuesta es globalmente única.
         for op in ops_cerradas:
-            if op.id not in st.session_state.ops_guardadas:
+            clave = (op.id, op.ts_entry)
+            if clave not in st.session_state.ops_guardadas:
                 sheets.guardar_operacion(sim.fila_sheets_operacion(op))
-                st.session_state.ops_guardadas.add(op.id)
+                st.session_state.ops_guardadas.add(clave)
 
         ciclo_actual = int(time.time() // REFRESH_SECONDS)
         if hay_cambios or ciclo_actual % 5 == 0:
