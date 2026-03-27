@@ -114,7 +114,7 @@ def init_state():
     s = get_secrets()
     if not s:
         return False
-    if "ready" not in st.session_state:
+    if "sim" not in st.session_state:
         st.session_state.iol      = IOLClient(s["iol_user"], s["iol_pass"])
         st.session_state.iol.login()
         st.session_state.alpaca   = AlpacaClient(s["alp_key"], s["alp_secret"])
