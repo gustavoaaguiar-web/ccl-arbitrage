@@ -61,8 +61,9 @@ def load_operaciones() -> pd.DataFrame:
 
     df["ts_entry"] = pd.to_datetime(df["ts_entry"], errors="coerce")
     df = df.dropna(subset=["ts_entry"])
-    df["ts_art"] = df["ts_entry"].dt.tz_localize(TZ_ART)
-    df["ts_ny"]  = df["ts_art"].dt.tz_convert(TZ_NY)
+    # Timestamps en sheet guardados como UTC → convertir a ART y NY
+    df["ts_art"] = df["ts_entry"].dt.tz_localize("UTC").dt.tz_convert(TZ_ART)
+    df["ts_ny"]  = df["ts_entry"].dt.tz_localize("UTC").dt.tz_convert(TZ_NY)
 
     # pnl_pct: tolerar coma decimal (Sheets a veces exporta "1,45")
     df["pnl_pct"] = (
