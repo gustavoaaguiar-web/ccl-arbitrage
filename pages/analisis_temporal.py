@@ -11,7 +11,9 @@ import plotly.express as px
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from sheets_manager import SheetsManager
+from app import get_secrets
 
 st.set_page_config(page_title="Análisis Temporal", page_icon="🕐", layout="wide")
 
@@ -32,8 +34,8 @@ COLS_OPS = [
 @st.cache_data(ttl=300)
 def load_operaciones() -> pd.DataFrame:
     try:
-        secrets = st.secrets["gcp_service_account"]
-        sm = SheetsManager(service_account_info=dict(secrets))
+        secrets = get_secrets()
+        sm = SheetsManager(service_account_info=secrets["gcp_service_account"])
         if not sm.conectar():
             st.error("No se pudo conectar a Google Sheets.")
             return pd.DataFrame()
