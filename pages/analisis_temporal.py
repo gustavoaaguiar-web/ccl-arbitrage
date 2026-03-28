@@ -35,7 +35,10 @@ COLS_OPS = [
 def load_operaciones() -> pd.DataFrame:
     try:
         secrets = get_secrets()
-        sm = SheetsManager(service_account_info=secrets["gcp_service_account"])
+        if not secrets:
+            st.error("No se pudieron cargar los secrets.")
+            return pd.DataFrame()
+        sm = SheetsManager(service_account_info=secrets["gcp"])
         if not sm.conectar():
             st.error("No se pudo conectar a Google Sheets.")
             return pd.DataFrame()
