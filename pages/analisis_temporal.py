@@ -55,15 +55,33 @@ def load_operaciones() -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
+    from zoneinfo import ZoneInfo
+    TZ_ART = ZoneInfo("America/Argentina/Buenos_Aires")
+    TZ_NY  = ZoneInfo("America/New_York")
+
     df["ts_entry"] = pd.to_datetime(df["ts_entry"], errors="coerce")
     df = df.dropna(subset=["ts_entry"])
-    df["pnl_pct"]  = pd.to_numeric(df["pnl_pct"], errors="coerce")
+    df["ts_art"] = df["ts_entry"].dt.tz_localize(TZ_ART)
+    df["ts_ny"]  = df["ts_art"].dt.tz_convert(TZ_NY)
 
-    df["hora"]    = df["ts_entry"].dt.hour
-    df["dow"]     = df["ts_entry"].dt.dayofweek       # 0=Lun
-    df["dia"]     = df["dow"].map(lambda d: DIAS_ES[d])
-    df["is_win"]  = df["motivo_cierre"].isin(WIN_MOTIVOS).astype(int)
-    df["is_stop"] = df["motivo_cierre"].isin(STOP_MOTIVOS).astype(int)
+    # pnl_pct: tolerar coma decimal (Sheets a veces exporta "1,45")
+    df["pnl_pct"] = (
+        df["pnl_pct"].astype(str)
+        .str.replace(",", ".", regex=False)
+        .pipe(pd.to_numeric, errors="coerce")
+    )
+
+    df["hora"]       = df["ts_art"].dt.hour
+    df["hora_ny"]    = df["ts_ny"].dt.hour
+    df["dow"]        = df["ts_art"].dt.dayofweek
+    df["dia"]        = df["dow"].map(lambda d: DIAS_ES[d])
+    df["is_win"]     = df["motivo_cierre"].isin(WIN_MOTIVOS).astype(int)
+    df["is_stop"]    = df["motivo_cierre"].isin(STOP_MOTIVOS).astype(int)
+    # Etiqueta de eje con ambos husos
+    hora_ny_map = df.groupby("hora")["hora_ny"].first()
+    df["hora_label"] = df["hora"].map(
+        lambda h: f"{h:02d}:00 ({hora_ny_map.get(h, h-1):02d}:00 NY)"
+    )
 
     return df
 
@@ -117,6 +135,15 @@ st.divider()
 ALL_HOURS = list(range(9, 22))
 ALL_DAYS  = DIAS_ES[:5]   # Lun–Vie
 
+def hora_labels(dff):
+    """Ordered list of ART+NY labels for unique hours in dff."""
+    mapping = (
+        dff.drop_duplicates("hora")
+        .sort_values("hora")
+        .set_index("hora")["hora_label"]
+    )
+    return mapping
+
 def make_pivot(data, value_col, agg_fn, index="hora", columns="dia"):
     piv = (
         data.groupby([index, columns])[value_col]
@@ -132,12 +159,13 @@ def make_pivot(data, value_col, agg_fn, index="hora", columns="dia"):
 # ── 1. Heatmap Win Rate hora × día ────────────────────────────────────────────
 st.subheader("📊 Win Rate (%) por hora y día")
 
+hora_ny_map = dff.groupby("hora")["hora_ny"].first()
 piv_win = make_pivot(dff, "is_win", "mean") * 100
 
 fig_wr = go.Figure(go.Heatmap(
     z=piv_win.values,
     x=piv_win.columns.tolist(),
-    y=[f"{h:02d}:00" for h in piv_win.index],
+    y=[f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)" for h in piv_win.index],
     colorscale="RdYlGn",
     zmin=0, zmax=100,
     text=[[f"{v:.0f}%" if not pd.isna(v) else "" for v in row] for row in piv_win.values],
@@ -164,7 +192,7 @@ stop_h = (
 stop_h["stop_pct"] = stop_h["stop_rate"] * 100
 
 fig_stop = go.Figure(go.Bar(
-    x=[f"{h:02d}:00" for h in stop_h["hora"]],
+    x=[f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)" for h in stop_h["hora"]],
     y=stop_h["stop_pct"],
     marker_color=stop_h["stop_pct"].apply(
         lambda v: "#ef4444" if v > 30 else "#f97316" if v > 15 else "#22c55e"
@@ -195,7 +223,7 @@ pnl_h = (
 fig_pnl = go.Figure()
 fig_pnl.add_trace(go.Bar(
     name="Media",
-    x=[f"{h:02d}:00" for h in pnl_h["hora"]],
+    x=[f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)" for h in pnl_h["hora"]],
     y=pnl_h["media"],
     marker_color=pnl_h["media"].apply(lambda v: "#22c55e" if v >= 0 else "#ef4444"),
     text=pnl_h["media"].apply(lambda v: f"{v:+.2f}%"),
@@ -203,7 +231,7 @@ fig_pnl.add_trace(go.Bar(
 ))
 fig_pnl.add_trace(go.Scatter(
     name="Mediana",
-    x=[f"{h:02d}:00" for h in pnl_h["hora"]],
+    x=[f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)" for h in pnl_h["hora"]],
     y=pnl_h["mediana"],
     mode="lines+markers",
     line=dict(color="#a78bfa", width=2, dash="dot"),
@@ -226,7 +254,7 @@ with col_a:
     cnt_h = dff.groupby("hora").size().reset_index(name="n")
     fig_ch = px.bar(
         cnt_h,
-        x=cnt_h["hora"].apply(lambda h: f"{h:02d}:00"),
+        x=cnt_h["hora"].apply(lambda h: f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)"),
         y="n",
         labels={"x": "Hora", "n": "Trades"},
         color_discrete_sequence=["#60a5fa"],
@@ -271,7 +299,7 @@ resumen = (
     )
     .reset_index()
 )
-resumen["Hora"]       = resumen["hora"].apply(lambda h: f"{h:02d}:00")
+resumen["Hora"] = resumen["hora"].apply(lambda h: f"{h:02d}:00 ({hora_ny_map.get(h,h-1):02d}:00 NY)")
 resumen["Win %"]      = (resumen["win_rate"]  * 100).round(1)
 resumen["Stop %"]     = (resumen["stop_rate"] * 100).round(1)
 resumen["PnL medio"]  = resumen["pnl_medio"].round(2)
