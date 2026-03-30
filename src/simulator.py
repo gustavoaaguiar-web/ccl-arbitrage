@@ -9,10 +9,10 @@ Simulador de Arbitraje CCL
 - Cierre forzado: 16:50 hs
 
 CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
-  [C] PnL precio ≤ -0.80%                          → stop loss duro
-  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +1.00%  → spread revertido con ganancia
-  [B] pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25%  → trailing con ganancia confirmada
-  [D] PnL precio ≥ +1.60%                          → take profit puro
+  [C] PnL precio ≤ -0.80%                              → stop loss duro
+  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +1.00%    → spread revertido con ganancia
+  [B] pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25% → trailing con ganancia confirmada
+  [D] PnL precio ≥ +1.60%                              → take profit puro
 
 MODELO DE CLIMA (Simons):
   El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
@@ -42,16 +42,15 @@ CAPITAL_INICIAL            = 10_000_000.0
 PCT_POR_OPERACION          = 0.15
 MAX_POSICIONES_POR_ESPECIE = 2
 
-UMBRAL_COMPRA = -0.5   # desvío CCL mínimo para comprar (%)
+UMBRAL_COMPRA_DEFAULT = -0.50   # desvío CCL mínimo para comprar (%)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_A          = 0.00   # desvío CCL — [A] reversión spread (%)
-UMBRAL_VENTA_A_PNL      = 1.00   # PnL precio mínimo para Salida A (%)
-# UMBRAL_VENTA_B_DEV eliminado — Salida B ya no requiere condición de desvío CCL
-UMBRAL_VENTA_B_PNL_MIN  = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
-UMBRAL_VENTA_B_CAIDA    = 0.25   # caída desde pico PnL% para disparar trailing B (%)
-TAKE_PROFIT_D           = 1.60   # PnL precio — [D] take profit puro (%)
-STOP_LOSS_C             = -0.80  # PnL precio — [C] stop loss duro (%)
+UMBRAL_VENTA_A         = 0.00   # desvío CCL — [A] reversión spread (%)
+UMBRAL_VENTA_A_PNL     = 1.00   # PnL precio mínimo para Salida A (%)
+UMBRAL_VENTA_B_PNL_MIN = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
+UMBRAL_VENTA_B_CAIDA   = 0.25   # caída desde pico PnL% para disparar trailing B (%)
+TAKE_PROFIT_D          = 1.60   # PnL precio — [D] take profit puro (%)
+STOP_LOSS_C            = -0.80  # PnL precio — [C] stop loss duro (%)
 
 
 @dataclass
@@ -67,12 +66,9 @@ class Posicion:
     dev_entry:     float
     precio_actual: float = 0.0
     pnl:           float = 0.0
-    pnl_pct:       float = 0.0   # PnL % actual
-    pnl_max_pct:        float = 0.0    # pico máximo de PnL % (para trailing B)
-    dev_max_alcanzado:  float = -99.0  # pico de desvío CCL alcanzado;
-                                       # una vez que llega a ≥0% queda registrado
-                                       # y el trailing B se activa aunque el dev
-                                       # vuelva negativo en el ciclo siguiente
+    pnl_pct:       float = 0.0
+    pnl_max_pct:        float = 0.0
+    dev_max_alcanzado:  float = -99.0
 
 
 @dataclass
@@ -99,13 +95,23 @@ class Simulador:
     Motor de simulación de arbitraje CCL intradiario.
 
     Lógica de decisión:
-        COMPRA  →  desvío CCL < -0.5%  AND  clima == "🟢 BULL"
+        COMPRA  →  desvío CCL < umbral_compra  AND  clima == "🟢 BULL"
         VENTA   →  cualquiera de las condiciones de salida se cumple
+
+    Args:
+        capital_inicial: Capital en ARS al iniciar.
+        umbral_compra:   Desvío CCL mínimo para comprar (%, negativo).
+                         Default -0.50. Configurable desde trader_job.py.
     """
 
-    def __init__(self, capital_inicial: float = CAPITAL_INICIAL):
-        self.capital_inicial   = capital_inicial
-        self.efectivo          = capital_inicial
+    def __init__(
+        self,
+        capital_inicial: float = CAPITAL_INICIAL,
+        umbral_compra: float = UMBRAL_COMPRA_DEFAULT,
+    ):
+        self.capital_inicial = capital_inicial
+        self.efectivo        = capital_inicial
+        self.umbral_compra   = umbral_compra   # único lugar donde vive el umbral
         self.posiciones:  Dict[str, List[Posicion]] = {}
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
@@ -154,14 +160,9 @@ class Simulador:
 
         Orden de prioridad:
           1. [C] Stop loss duro         → pnl_pct ≤ -0.80%
-          2. [A] Reversión del spread   → dev ≥ +0.10% AND pnl_pct ≥ +1.00%
-          3. [B] Trailing confirmado    → pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25%
-          4. [D] Take profit puro       → pnl_pct ≥ +2.40%
-
-        Todos los flags históricos (dev_max_alcanzado, pnl_max_pct) se
-        actualizan en procesar_ciclo() antes de llamar a este método,
-        por lo que las condiciones B no requieren que los eventos coincidan
-        en el mismo ciclo de 60s.
+          2. [A] Reversión del spread   → dev ≥ 0.00% AND pnl_pct ≥ +1.00%
+          3. [B] Trailing confirmado    → pnl_max ≥ +0.50% AND caída desde pico ≥ 0.25%
+          4. [D] Take profit puro       → pnl_pct ≥ +1.60%
         """
         pnl_pct = pos.pnl_pct
 
@@ -169,17 +170,11 @@ class Simulador:
         if pnl_pct <= STOP_LOSS_C:
             return "STOP_LOSS_C"
 
-        # [A] Reversión completa del spread — solo si la operación está en ganancia
-        # Evita cerrar con pérdida por una reversión del spread sin ganancia de precio
         # [A] Spread revertido Y precio subió al menos 1%
-        # Relación riesgo/ganancia: captura ~+1% sabiendo que el p75 del pico llega ahí
-        # Las que no llegan quedan para Salida B (trailing) o cierre forzado (pérdida leve)
         if dev >= UMBRAL_VENTA_A and pnl_pct >= UMBRAL_VENTA_A_PNL:
             return "SALIDA_A"
 
-        # [B] Trailing con ganancia confirmada:
-        #   - El precio llegó a ganar al menos +0.50% en algún momento
-        #   - Desde ese pico el precio cayó ≥ 0.25%
+        # [B] Trailing con ganancia confirmada
         if pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN:
             caida_desde_pico = pos.pnl_max_pct - pnl_pct
             if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
@@ -238,7 +233,10 @@ class Simulador:
             self.posiciones[symbol] = []
         self.posiciones[symbol].append(pos)
 
-        logger.info(f"🟢 COMPRA {symbol}: {cantidad:.2f} u. @ ${precio_ars:.2f} | Monto: ${monto:,.0f}")
+        logger.info(
+            f"🟢 COMPRA {symbol}: {cantidad:.2f} u. @ ${precio_ars:.2f} | "
+            f"Monto: ${monto:,.0f} | dev: {dev:+.2f}%"
+        )
         return pos
 
     def cerrar_posicion(
@@ -250,7 +248,7 @@ class Simulador:
     ) -> Operacion:
         monto_exit = pos.cantidad * precio_ars
         pnl        = monto_exit - pos.monto_entry
-        pnl_pct    = (pnl / pos.monto_entry) * 100 if pos.monto_entry else 0  # FIX: guard div/0
+        pnl_pct    = (pnl / pos.monto_entry) * 100 if pos.monto_entry else 0
 
         self.efectivo += monto_exit
 
@@ -279,16 +277,17 @@ class Simulador:
         cerradas = []
         for symbol in list(self.posiciones.keys()):
             for pos in list(self.posiciones[symbol]):
-                # Fallback si IOL ya cerro y no devuelve precio a las 16:50
                 precio = precios_ars.get(symbol, 0)
                 if precio <= 0:
-                    precio = pos.precio_actual   # ultimo precio visto en el ciclo anterior
+                    precio = pos.precio_actual
                 if precio <= 0:
-                    precio = pos.precio_entry    # ultimo recurso: precio de entrada
-                    logger.warning(f"CIERRE_FORZADO {symbol}: sin precio, usando entry ${precio:.2f}")
+                    precio = pos.precio_entry
+                    logger.warning(
+                        f"CIERRE_FORZADO {symbol}: sin precio, usando entry ${precio:.2f}"
+                    )
                 op = self.cerrar_posicion(symbol, pos, precio, motivo)
                 cerradas.append(op)
-            self.posiciones[symbol] = []         # siempre limpiar, con o sin precio
+            self.posiciones[symbol] = []
         return cerradas
 
     # ──────────────────── CICLO PRINCIPAL ────────────────
@@ -313,13 +312,12 @@ class Simulador:
         # 2. Actualizar precios, PnL y pico máximo de cada posición abierta
         for sym, poss in self.posiciones.items():
             precio = precios_ars.get(sym, 0)
-            if precio <= 0:                   # FIX: precio 0/None de IOL → no tocar PnL
+            if precio <= 0:
                 continue
             for pos in poss:
                 pos.precio_actual = precio
                 pos.pnl     = (precio - pos.precio_entry) * pos.cantidad
                 pos.pnl_pct = ((precio / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
-                # Actualizar pico de PnL — nunca retroceder
                 if pos.pnl_pct > pos.pnl_max_pct:
                     pos.pnl_max_pct = pos.pnl_pct
 
@@ -328,7 +326,7 @@ class Simulador:
             if not self.posiciones[symbol]:
                 continue
             ccl = ccl_map.get(symbol, 0)
-            if ccl <= 0 or ccl_avg == 0:      # FIX: ccl=0 daría dev=-100% y dispararía stop loss
+            if ccl <= 0 or ccl_avg == 0:
                 continue
             dev    = (ccl / ccl_avg - 1) * 100
             precio = precios_ars.get(symbol, 0)
@@ -336,7 +334,6 @@ class Simulador:
                 continue
 
             for pos in list(self.posiciones[symbol]):
-                # Actualizar pico de desvío — nunca retroceder
                 if dev > pos.dev_max_alcanzado:
                     pos.dev_max_alcanzado = dev
                 motivo = self._evaluar_salida(pos, dev)
@@ -344,7 +341,6 @@ class Simulador:
                     op = self.cerrar_posicion(symbol, pos, precio, motivo)
                     cerradas.append(op)
 
-            # Remover las posiciones cerradas
             ids_cerradas = {op.id for op in cerradas}
             self.posiciones[symbol] = [
                 p for p in self.posiciones[symbol] if p.id not in ids_cerradas
@@ -359,7 +355,7 @@ class Simulador:
                 clima  = climas.get(symbol, "🔴 BEAR")
                 precio = precios_ars.get(symbol, 0)
 
-                if dev < UMBRAL_COMPRA and clima == "🟢 BULL" and precio > 0:
+                if dev < self.umbral_compra and clima == "🟢 BULL" and precio > 0:
                     pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
                         abiertas.append(pos)
@@ -415,5 +411,4 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-  ]
-          
+        ]
