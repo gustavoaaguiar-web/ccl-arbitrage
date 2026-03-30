@@ -31,9 +31,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-from iol_client    import IOLClient
-from alpaca_client import AlpacaClient
-from simulator     import Simulador
+from iol_client     import IOLClient
+from alpaca_client  import AlpacaClient
+from simulator      import Simulador
 from sheets_manager import SheetsManager
 
 logging.basicConfig(
@@ -46,14 +46,15 @@ logger = logging.getLogger(__name__)
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
 # ── CONSTANTES ────────────────────────────────────────────
-REFRESH_SECONDS   = 60
-HMM_MAX_SNAPSHOTS = 500
+REFRESH_SECONDS     = 60
+HMM_MAX_SNAPSHOTS   = 500
 HMM_BARRAS_LOOKBACK = 252   # barras 1D (~1 año)
 
 HORA_APERTURA    = dtime(10, 30)
 HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
 
+# 20 pares CCL — LOMA eliminado
 PARES = {
     "GGAL":  ("GGAL",   10), "YPFD":  ("YPF",    1),
     "PAMP":  ("PAM",    25), "CEPU":  ("CEPU",  10),
@@ -62,12 +63,10 @@ PARES = {
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
     "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
-    "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
-    "TXR":   ("TX",      4), "GLD":   ("GLD",   50),
-    "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
+    "TGSU2": ("TGS",     5), "TXR":   ("TX",     4),
+    "GLD":   ("GLD",    50), "IBIT":  ("IBIT",  10),
+    "SPY":   ("SPY",    20), "SUPV":  ("SUPV",   5),
 }
-
-UMBRAL_COMPRA = -0.6
 
 
 def hora_argentina():
@@ -110,7 +109,7 @@ def enviar_mail(gmail_user, gmail_pass, subject, cuerpo):
 
 # ── HMM ───────────────────────────────────────────────────
 def fetch_barras_hmm(alpaca):
-    """Descarga barras 1D para todos los símbolos USD."""
+    """Descarga barras 1D para todos los símbolos USD — individual por símbolo."""
     syms_usd = list({v[0] for v in PARES.values()})
     return alpaca.get_bars(syms_usd, timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
 
@@ -118,7 +117,8 @@ def fetch_barras_hmm(alpaca):
 def clima_hmm(sym, barras_cache):
     sym_usd = PARES[sym][0]
     precios = barras_cache.get(sym_usd, [])
-    if len(precios) < 5:
+    if len(precios) < 63:
+        logger.debug(f"HMM {sym}: solo {len(precios)} barras — devolviendo 🔴")
         return "🔴"
     try:
         from hmmlearn.hmm import GaussianHMM
@@ -126,8 +126,12 @@ def clima_hmm(sym, barras_cache):
         m      = GaussianHMM(n_components=2, random_state=42, n_iter=100).fit(ret)
         estado = m.predict(ret)[-1]
         bull   = int(np.argmax(m.means_.flatten()))
+        # Guard: si la media del estado bull es negativa, no es bull real
+        if m.means_.flatten()[bull] < -0.0005:
+            return "🔴"
         return "🟢" if estado == bull else "🔴"
-    except:
+    except Exception as e:
+        logger.warning(f"HMM error {sym}: {e}")
         return "🔴"
 
 
@@ -135,8 +139,13 @@ def clima_hmm(sym, barras_cache):
 def fetch_precios(iol, alpaca):
     p_ars = {}
 
-    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
-    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXR","TGSU2","SUPV"}
+    CEDEARS_SET = {
+        "AAPL", "AMZN", "MSFT", "NVDA", "TSLA", "META",
+        "GOOGL", "MELI", "GLD", "IBIT", "SPY", "VIST",
+    }
+    MERVAL_SET = {
+        "GGAL", "YPFD", "PAMP", "CEPU", "BMA", "TXR", "TGSU2", "SUPV",
+    }
 
     # Batch 1 — CEDEARs (1 request)
     try:
@@ -190,7 +199,7 @@ def alerta_operacion(gmail_user, gmail_pass, ops_abiertas, ops_cerradas, ccl_avg
     if ops_abiertas:
         cuerpo += f"\n🟢 COMPRAS ({len(ops_abiertas)}):\n"
         for pos in ops_abiertas:
-            cuerpo += f"  {pos.symbol:<8} ${pos.precio_entry:,.1f} | Monto: ${pos.monto_entry:,.0f}\n"
+            cuerpo += f"  {pos.symbol:<8} ${pos.precio_entry:,.1f} | Monto: ${pos.monto_entry:,.0f} | dev: {pos.dev_entry:+.2f}%\n"
     if ops_cerradas:
         cuerpo += f"\n🔴 VENTAS ({len(ops_cerradas)}):\n"
         for op in ops_cerradas:
@@ -236,16 +245,24 @@ def ejecutar_ciclo(iol, alpaca, sim, sheets, barras_cache,
         clima = clima_hmm(sym, barras_cache)
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
-    # Log señales
-    for sym, ccl in sorted(ccl_map.items(), key=lambda x: (x[1]/ccl_avg - 1)):
-        dev = (ccl / ccl_avg - 1) * 100
-        logger.info(f"  {sym:<6} dev={dev:+.2f}%  {climas[sym]}")
+    # Log señales con diagnóstico de bloqueos
+    for sym, ccl in sorted(ccl_map.items(), key=lambda x: (x[1] / ccl_avg - 1)):
+        dev   = (ccl / ccl_avg - 1) * 100
+        clima = climas[sym]
+        if dev < sim.umbral_compra:
+            if clima == "🟢 BULL":
+                logger.info(f"  {sym:<6} dev={dev:+.2f}%  {clima}  ✅ → señal COMPRA")
+            else:
+                logger.info(f"  {sym:<6} dev={dev:+.2f}%  {clima}  ❌ bloqueado por HMM")
+        else:
+            logger.info(f"  {sym:<6} dev={dev:+.2f}%  {clima}")
 
-    # Simulador
+    # Verificar horario de mercado
     if not (HORA_APERTURA <= ahora):
         logger.info("Fuera de horario de mercado — sin operaciones")
         return
 
+    # En warmup se pasa medianoche para que el simulador no opere
     ahora_sim = dtime(0, 0) if en_warmup else ahora
     resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora_sim)
 
@@ -268,7 +285,6 @@ def ejecutar_ciclo(iol, alpaca, sim, sheets, barras_cache,
         sheets.guardar_estado_simulador(sim)
         alerta_operacion(gmail_user, gmail_pass, ops_abiertas, ops_cerradas, ccl_avg)
 
-    # Resumen posiciones abiertas
     n_pos = sum(len(v) for v in sim.posiciones.values())
     logger.info(f"Posiciones abiertas: {n_pos} | Efectivo: ${sim.efectivo:,.0f}")
 
@@ -284,7 +300,6 @@ def main():
 
     s = get_secrets()
 
-    # Inicializar clientes
     iol    = IOLClient(s["iol_user"], s["iol_pass"])
     iol.login()
     alpaca = AlpacaClient(s["alp_key"], s["alp_secret"])
@@ -292,22 +307,20 @@ def main():
     sh.conectar()
 
     # Cargar estado del simulador desde Sheets
-    sim = Simulador()
+    sim = Simulador(umbral_compra=-0.50)
     sh.cargar_estado_simulador(sim)
     sh.cargar_posiciones(sim)
     logger.info(f"Simulador cargado — efectivo: ${sim.efectivo:,.0f} | "
-                f"posiciones: {sum(len(v) for v in sim.posiciones.values())}")
+                f"posiciones: {sum(len(v) for v in sim.posiciones.values())} | "
+                f"umbral_compra: {sim.umbral_compra:+.2f}%")
 
-    # Cargar historial CCL
     historial = sh.cargar_historial_ccl()
     logger.info(f"Historial CCL: {len(historial)} snapshots")
 
-    # Descargar barras HMM una vez por ejecución
     logger.info("Descargando barras 1D para HMM...")
     barras_cache = fetch_barras_hmm(alpaca)
-    logger.info(f"Barras HMM cargadas: {list(barras_cache.keys())}")
+    logger.info(f"Barras HMM cargadas: {len(barras_cache)} símbolos — {list(barras_cache.keys())}")
 
-    # Loop de ciclos
     for n in range(1, args.ciclos + 1):
         t_inicio = time.time()
 
@@ -316,10 +329,9 @@ def main():
             historial, s["gmail_user"], s["gmail_pass"], n
         )
 
-        # Esperar hasta completar 60s (excepto en el último ciclo)
         if n < args.ciclos:
-            elapsed  = time.time() - t_inicio
-            sleep_t  = max(0, REFRESH_SECONDS - elapsed)
+            elapsed = time.time() - t_inicio
+            sleep_t = max(0, REFRESH_SECONDS - elapsed)
             logger.info(f"Esperando {sleep_t:.1f}s para próximo ciclo...")
             time.sleep(sleep_t)
 
