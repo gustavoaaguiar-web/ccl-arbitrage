@@ -23,6 +23,11 @@ MODELO DE CLIMA (Simons):
     Clima  →  régimen bull/bear en USD           (momentum del subyacente)
 
   Compra solo cuando AMBOS coinciden. Venta solo por desvío CCL.
+
+UMBRALES DIFERENCIADOS:
+  Activos volátiles (YPF/YPFD, TGSU2) requieren umbral más restrictivo (-0.65%)
+  para evitar señales falsas por volatilidad natural sin directionalidad.
+  CEDEARs y otros mantienen -0.50%.
 """
 
 from dataclasses import dataclass, field
@@ -42,7 +47,11 @@ CAPITAL_INICIAL            = 10_000_000.0
 PCT_POR_OPERACION          = 0.15
 MAX_POSICIONES_POR_ESPECIE = 2
 
-UMBRAL_COMPRA_DEFAULT = -0.50   # desvío CCL mínimo para comprar (%)
+UMBRAL_COMPRA_DEFAULT = -0.50   # desvío CCL mínimo para comprar (%) — CEDEARs y estables
+UMBRAL_COMPRA_VOLATIL = -0.65   # desvío CCL mínimo para activos volátiles (YPF, TGSU2)
+
+# Símbolos que requieren umbral más restrictivo por volatilidad
+SIMBOLOS_VOLATILES = {"YPFD", "TGSU2"}
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
 UMBRAL_VENTA_A         = 0.00   # desvío CCL — [A] reversión spread (%)
@@ -96,12 +105,14 @@ class Simulador:
 
     Lógica de decisión:
         COMPRA  →  desvío CCL < umbral_compra  AND  clima == "🟢 BULL"
+                   (umbral diferenciado para YPFD/TGSU2: -0.65%)
         VENTA   →  cualquiera de las condiciones de salida se cumple
 
     Args:
         capital_inicial: Capital en ARS al iniciar.
         umbral_compra:   Desvío CCL mínimo para comprar (%, negativo).
                          Default -0.50. Configurable desde trader_job.py.
+                         Activos volátiles usan -0.65% automáticamente.
     """
 
     def __init__(
@@ -111,10 +122,23 @@ class Simulador:
     ):
         self.capital_inicial = capital_inicial
         self.efectivo        = capital_inicial
-        self.umbral_compra   = umbral_compra   # único lugar donde vive el umbral
+        self.umbral_compra   = umbral_compra   # único lugar donde vive el umbral por defecto
         self.posiciones:  Dict[str, List[Posicion]] = {}
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
+        
+        # Log de configuración al iniciar
+        logger.info(
+            f"Simulador inicializado: capital=${capital_inicial:,.0f}, "
+            f"umbral_base={umbral_compra:.2f}%, "
+            f"volatiles={SIMBOLOS_VOLATILES} → umbral={UMBRAL_COMPRA_VOLATIL:.2f}%"
+        )
+
+    def _obtener_umbral_simbolo(self, symbol: str) -> float:
+        """Retorna el umbral de compra para un símbolo específico."""
+        if symbol in SIMBOLOS_VOLATILES:
+            return UMBRAL_COMPRA_VOLATIL
+        return self.umbral_compra
 
     # ──────────────────── ESTADO ─────────────────────────
 
@@ -346,7 +370,7 @@ class Simulador:
                 p for p in self.posiciones[symbol] if p.id not in ids_cerradas
             ]
 
-        # 4. Abrir posiciones: desvío bajo AND clima BULL
+        # 4. Abrir posiciones: desvío bajo AND clima BULL (con umbral diferenciado)
         if self.puede_comprar(ahora):
             for symbol, ccl in ccl_map.items():
                 if ccl_avg == 0:
@@ -354,11 +378,19 @@ class Simulador:
                 dev    = (ccl / ccl_avg - 1) * 100
                 clima  = climas.get(symbol, "🔴 BEAR")
                 precio = precios_ars.get(symbol, 0)
+                umbral_sym = self._obtener_umbral_simbolo(symbol)
 
-                if dev < self.umbral_compra and clima == "🟢 BULL" and precio > 0:
+                # Decisión de compra con umbral diferenciado por volatilidad
+                if dev < umbral_sym and clima == "🟢 BULL" and precio > 0:
                     pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
                         abiertas.append(pos)
+                elif dev < self.umbral_compra and clima == "🟢 BULL" and precio > 0:
+                    # Log diagnóstico: bloqueado por umbral específico del símbolo
+                    logger.debug(
+                        f"[NO COMPRA] {symbol}: dev={dev:.2f}% supera umbral="
+                        f"{umbral_sym:.2f}% (activo volátil)"
+                    )
 
         return {"abiertas": abiertas, "cerradas": cerradas, "forzadas": forzadas}
 
