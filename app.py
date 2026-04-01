@@ -64,6 +64,7 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from typing import Optional, Dict, List
 
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
