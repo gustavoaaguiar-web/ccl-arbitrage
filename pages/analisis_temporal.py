@@ -306,14 +306,27 @@ resumen["Stop %"]     = (resumen["stop_rate"] * 100).round(1)
 resumen["PnL medio"]  = resumen["pnl_medio"].round(2)
 resumen["PnL suma"]   = resumen["pnl_total"].round(2)
 
-def color_pnl(val):
-    return "color: #22c55e" if val > 0 else "color: #ef4444" if val < 0 else ""
+# ── FIX: Reemplazar .applymap() (deprecado) con .apply() ─────────────────────
+# .applymap() fue deprecado en pandas 2.1+ y causa AttributeError en Streamlit actual.
+# Solución: usar .apply() con una función que itera sobre columnas específicas.
+
+def style_pnl_cells(s):
+    """
+    Función de styling para columnas PnL.
+    s es una Series (una columna). Retorna una lista de estilos CSS.
+    """
+    if s.name in ["PnL medio", "PnL suma"]:
+        return [
+            "color: #22c55e" if v > 0 else "color: #ef4444" if v < 0 else ""
+            for v in s
+        ]
+    return [""] * len(s)
 
 st.dataframe(
     resumen[["Hora", "trades", "Win %", "Stop %", "PnL medio", "PnL suma"]]
     .rename(columns={"trades": "Trades"})
     .style
-    .applymap(color_pnl, subset=["PnL medio", "PnL suma"])
+    .apply(style_pnl_cells)
     .format({"Win %": "{:.1f}%", "Stop %": "{:.1f}%",
              "PnL medio": "{:+.2f}%", "PnL suma": "{:+.2f}%"}),
     use_container_width=True,
