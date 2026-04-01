@@ -52,6 +52,9 @@ PENDIENTE (dinero real):
 - Ver bloque marcado con # TODO: REAL TRADING
 """
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+
 import time, json, logging, smtplib, statistics
 import numpy as np
 import streamlit as st
@@ -61,8 +64,6 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
