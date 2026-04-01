@@ -122,12 +122,11 @@ class Simulador:
     ):
         self.capital_inicial = capital_inicial
         self.efectivo        = capital_inicial
-        self.umbral_compra   = umbral_compra   # único lugar donde vive el umbral por defecto
+        self.umbral_compra   = umbral_compra
         self.posiciones:  Dict[str, List[Posicion]] = {}
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
-        
-        # Log de configuración al iniciar
+
         logger.info(
             f"Simulador inicializado: capital=${capital_inicial:,.0f}, "
             f"umbral_base={umbral_compra:.2f}%, "
@@ -294,10 +293,16 @@ class Simulador:
         self.operaciones.append(op)
 
         emoji = "✅" if pnl > 0 else "❌"
-        logger.info(f"{emoji} CIERRE {symbol} [{motivo}]: PnL ${pnl:+,.0f} ({pnl_pct:+.2f}%)")
+        logger.info(
+            f"{emoji} CIERRE {symbol} [{motivo}]: PnL ${pnl:+,.0f} ({pnl_pct:+.2f}%)"
+        )
         return op
 
-    def cerrar_todas(self, precios_ars: Dict[str, float], motivo: str = "CIERRE_FORZADO"):
+    def cerrar_todas(
+        self,
+        precios_ars: Dict[str, float],
+        motivo: str = "CIERRE_FORZADO",
+    ) -> List[Operacion]:
         cerradas = []
         for symbol in list(self.posiciones.keys()):
             for pos in list(self.posiciones[symbol]):
@@ -375,18 +380,17 @@ class Simulador:
             for symbol, ccl in ccl_map.items():
                 if ccl_avg == 0:
                     continue
-                dev    = (ccl / ccl_avg - 1) * 100
-                clima  = climas.get(symbol, "🔴 BEAR")
-                precio = precios_ars.get(symbol, 0)
+                dev        = (ccl / ccl_avg - 1) * 100
+                clima      = climas.get(symbol, "🔴 BEAR")
+                precio     = precios_ars.get(symbol, 0)
                 umbral_sym = self._obtener_umbral_simbolo(symbol)
 
-                # Decisión de compra con umbral diferenciado por volatilidad
                 if dev < umbral_sym and clima == "🟢 BULL" and precio > 0:
                     pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
                     if pos:
                         abiertas.append(pos)
                 elif dev < self.umbral_compra and clima == "🟢 BULL" and precio > 0:
-                    # Log diagnóstico: bloqueado por umbral específico del símbolo
+                    # Bloqueado por umbral específico del símbolo (activo volátil)
                     logger.debug(
                         f"[NO COMPRA] {symbol}: dev={dev:.2f}% supera umbral="
                         f"{umbral_sym:.2f}% (activo volátil)"
@@ -402,7 +406,10 @@ class Simulador:
         pnl_pct   = (pnl_total / self.capital_inicial) * 100
 
         ops_ganadoras = [o for o in self.operaciones if o.pnl > 0]
-        win_rate      = (len(ops_ganadoras) / len(self.operaciones) * 100) if self.operaciones else 0
+        win_rate      = (
+            len(ops_ganadoras) / len(self.operaciones) * 100
+            if self.operaciones else 0
+        )
 
         return {
             "capital_inicial":       self.capital_inicial,
