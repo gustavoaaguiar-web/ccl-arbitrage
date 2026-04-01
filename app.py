@@ -26,11 +26,6 @@ MODELO DE CLIMA (Simons):
   "quieto" (returns ~0, std muy baja) tiene Sharpe artificialmente alto
   y era clasificado como BULL aunque el mercado no lo fuera.
 
-UMBRALES DIFERENCIADOS:
-  Activos volátiles (YPF/YPFD, TGSU2) usan umbral -0.65% para evitar
-  falsas señales por volatilidad sin directionalidad.
-  CEDEARs y otros usan -0.50%.
-
 HISTORIAL HMM:
   El historial de precios USD se persiste en Google Sheets (HMM_Historial)
   con un rolling window de 500 snapshots (~1.5 días de trading a 60s/ciclo).
@@ -41,25 +36,11 @@ FETCH DE BARRAS:
   retorne exactamente `limit` barras por símbolo. El endpoint multi-símbolo
   reparte el limit entre todos, resultando en pocas barras por símbolo.
 
-CAMBIOS REALIZADOS:
-  - Eliminado VIST de PARES (baja liquidez, ratio 3:1 → ruido)
-  - YPFD y TGSU2 piden umbral -0.65% automáticamente
-  - Logs diagnósticos distinguen bloques por HMM vs umbral
-  - [FIX] fetch_precios: MERVAL_SET usa claves IOL (no símbolos Alpaca)
-    → TGSU2 y TXR se pedían como "TGS"/"TX" a IOL — ahora corregido
-  - [FIX] Guard de horario en main(): fuera de sesión muestra estado
-    y duerme 5 min sin llamar a IOL ni Alpaca
-  - [FIX] fetch_precios_fallback: reconstruye p_ars/p_usd desde último
-    snapshot de Sheets cuando IOL está offline o retorna vacío
-
 PENDIENTE (dinero real):
 - Lógica de órdenes IOL (compra/venta)
 - Manejo de puntas y precio límite
 - Ver bloque marcado con # TODO: REAL TRADING
 """
-
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 import time, json, logging, smtplib, statistics
 import numpy as np
@@ -70,19 +51,18 @@ from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, Dict, List
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
-
 
 def hora_argentina():
     """Retorna datetime actual en horario de Argentina."""
     return datetime.now(TZ_ARG)
 
-
 from iol_client import IOLClient
 from alpaca_client import AlpacaClient
-from simulator import Simulador, SIMBOLOS_VOLATILES, UMBRAL_COMPRA_VOLATIL
+from simulator import Simulador
 from sheets_manager import SheetsManager
 
 logging.basicConfig(level=logging.INFO)
@@ -98,35 +78,21 @@ HORA_APERTURA    = dtime(10, 30)
 HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
 
-# Ventana en la que la app intenta conectarse a IOL/Alpaca
-# Margen de 10 min antes y después para cubrir latencias
-HORA_SESION_INICIO = dtime(9, 50)
-HORA_SESION_FIN    = dtime(17, 10)
-
 # Rolling window del historial en memoria (consistente con HMM_Historial en Sheets)
 HMM_MAX_SNAPSHOTS = 500
 
-# PARES: {IOL_symbol: (Alpaca_symbol, ratio)}
-# VIST removido por baja liquidez y ratio extremo (3:1)
-# LOMA removido (no disponible en IOL)
 PARES = {
     "GGAL":  ("GGAL",   10), "YPFD":  ("YPF",    1),
     "PAMP":  ("PAM",    25), "CEPU":  ("CEPU",  10),
     "AMZN":  ("AMZN",  144), "MSFT":  ("MSFT",  30),
     "NVDA":  ("NVDA",   24), "TSLA":  ("TSLA",  15),
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
-    "GOOGL": ("GOOGL",  58), "meli":  ("MELI", 120),
-    "BMA":   ("BMA",    10), "SUPV":  ("SUPV",   5),
-    "TGSU2": ("TGS",     5), "TXR":   ("TX",     4),
-    "GLD":   ("GLD",    50), "IBIT":  ("IBIT",  10),
-    "SPY":   ("SPY",    20),
+    "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
+    "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
+    "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
+    "TXR":   ("TX",      4), "GLD":   ("GLD",   50),
+    "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
 }
-
-# [FIX] Conjunto de acciones MerVal identificadas por su clave IOL (no por
-# el símbolo Alpaca). Antes se filtraba por v[0] (símbolo Alpaca), lo que
-# causaba que TGSU2→"TGS" y TXR→"TX" terminaran en el panel CEDEAR de IOL
-# con tickers incorrectos. Ahora se usa la key IOL directamente.
-MERVAL_SET = {"GGAL", "YPFD", "PAMP", "CEPU", "BMA", "SUPV", "TGSU2", "TXR"}
 
 # ── SECRETS ───────────────────────────────────────────────
 def get_secrets():
@@ -140,10 +106,8 @@ def get_secrets():
             "gmail_pass": st.secrets["GMAIL_APP_PASS"],
             "gcp":        json.loads(st.secrets["GCP_SERVICE_ACCOUNT"]),
         }
-    except Exception as e:
-        logger.error(f"Error cargando secrets: {e}")
+    except:
         return None
-
 
 # ── SESSION STATE ──────────────────────────────────────────
 def init_state():
@@ -151,9 +115,9 @@ def init_state():
     if not s:
         return False
     if "sim" not in st.session_state:
-        st.session_state.iol = IOLClient(s["iol_user"], s["iol_pass"])
+        st.session_state.iol      = IOLClient(s["iol_user"], s["iol_pass"])
         st.session_state.iol.login()
-        st.session_state.alpaca = AlpacaClient(s["alp_key"], s["alp_secret"])
+        st.session_state.alpaca   = AlpacaClient(s["alp_key"], s["alp_secret"])
         sh = SheetsManager(s["gcp"])
         sh.conectar()
         st.session_state.sheets   = sh
@@ -161,11 +125,13 @@ def init_state():
         sim = Simulador()
         sh.cargar_estado_simulador(sim)
         sh.cargar_posiciones(sim)
-        st.session_state.sim = sim
+        st.session_state.sim = sim  # FIX: asignar sim a session_state
 
         # FIX: pre-poblar ops_guardadas desde Sheets al arrancar.
         # Usa clave compuesta (id, ts_entry) porque _op_counter se resetea
         # cada jornada y el mismo ID puede repetirse en días distintos.
+        # Esto evita que un reinicio de la app vuelva a guardar operaciones
+        # que ya estaban escritas en Sheets antes del crash.
         try:
             ops_existentes = sh.cargar_operaciones()
             st.session_state.ops_guardadas = {
@@ -175,26 +141,24 @@ def init_state():
             logger.warning(f"No se pudo pre-cargar ops_guardadas: {e}")
             st.session_state.ops_guardadas = set()
 
-        st.session_state.gmail         = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
-        st.session_state.alertadas     = {}
+        st.session_state.gmail        = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
+        st.session_state.alertadas    = {}
         st.session_state.ciclos_warmup = 0
         st.session_state.ready         = True
     return True
-
 
 # ── HMM — MODELO SIMONS (barras 1D) ──────────────────────
 HMM_BARRAS_REFRESH_MIN = 10   # refrescar barras cada N minutos
 HMM_BARRAS_LOOKBACK    = 252  # cantidad de barras 1D a pedir (~1 año)
 
-
 def _fetch_barras_1d():
     """
-    Descarga barras 1D via AlpacaClient para todos los símbolos USD en PARES.
+    Descarga barras 1D via AlpacaClient para todos los simbolos USD en PARES.
 
-    IMPORTANTE: se fetchea símbolo por símbolo, NO en batch.
-    El endpoint multi-símbolo de Alpaca interpreta `limit` como total entre
-    todos los símbolos, resultando en ~12 barras por símbolo con 20 símbolos.
-    Fetching individual garantiza exactamente `limit` barras por símbolo.
+    IMPORTANTE: se fetchea simbolo por simbolo, NO en batch.
+    El endpoint multi-simbolo de Alpaca interpreta `limit` como total entre
+    todos los simbolos, resultando en ~12 barras por simbolo con 20 simbolos.
+    Fetching individual garantiza exactamente `limit` barras por simbolo.
 
     Retorna dict {sym_usd: [close, close, ...]} o {} si falla.
     """
@@ -206,21 +170,17 @@ def _fetch_barras_1d():
     resultado = {}
 
     for sym in syms_usd:
-        try:
-            barras = alpaca.get_bars([sym], timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
-            if sym in barras:
-                resultado[sym] = barras[sym]
-                logger.info(f"HMM fetch: {sym} → {len(barras[sym])} barras")
-            else:
-                logger.warning(f"HMM fetch: {sym} → sin datos")
-        except Exception as e:
-            logger.warning(f"HMM fetch error {sym}: {e}")
+        barras = alpaca.get_bars([sym], timeframe="1Day", limit=HMM_BARRAS_LOOKBACK)
+        if sym in barras:
+            resultado[sym] = barras[sym]
+            logger.info(f"HMM fetch: {sym} → {len(barras[sym])} barras")
+        else:
+            logger.warning(f"HMM fetch: {sym} → sin datos")
 
     return resultado
 
-
 def _refrescar_barras_si_necesario():
-    """Refresca el cache de barras 1D si pasaron más de HMM_BARRAS_REFRESH_MIN minutos."""
+    """Refresca el cache de barras 1D si pasaron mas de HMM_BARRAS_REFRESH_MIN minutos."""
     ahora  = hora_argentina()
     ultimo = st.session_state.get("hmm_barras_ts")
     if ultimo is None or (ahora - ultimo).seconds >= HMM_BARRAS_REFRESH_MIN * 60:
@@ -228,464 +188,305 @@ def _refrescar_barras_si_necesario():
         if barras:
             st.session_state["hmm_barras"]    = barras
             st.session_state["hmm_barras_ts"] = ahora
+            conteo = {s: len(b) for s, b in barras.items()}
+            logger.info(f"HMM 1D: barras actualizadas → {conteo}")
 
-
-# ── HMM (Simons) ──────────────────────────────────────────
-def entrenar_hmm_simbolo(sym_usd: str, closes: list) -> Optional[dict]:
+def clima_hmm(sym, historial=None):
     """
-    Entrena un HMM de 2 estados sobre log-returns 1D.
+    Retorna verde si el subyacente USD esta en regimen bull, rojo si no.
+    Usa barras 1D de Alpaca fetched individualmente (cache de 10 min).
 
-    Retorna:
-        {"mean_bull": float, "mean_bear": float, "state": str}
+    Identificacion de estado BULL por argmax de medias puras.
+    Guard: si la media mas alta es negativa, ambos estados son bajistas
+    (mercado bear con rebotes) y se retorna rojo directamente.
 
-    Guard: si mean_bull < -0.0005, ambos estados son bajistas → retorna 🔴.
+    Esto evita el problema del Sharpe en activos iliquidos: el estado
+    "quieto" (returns ~0, std muy baja) tiene Sharpe artificialmente alto
+    y era incorrectamente clasificado como BULL.
+
+    RETORNO INTRADIARIO: el modelo se entrena solo con cierres historicos
+    (sin look-ahead), pero al predecir se agrega el retorno de hoy
+    (precio actual vs ultimo cierre) como ultima observacion. Esto permite
+    que movimientos fuertes del dia corriente (como +2% en YPF) sean
+    considerados al clasificar el regimen actual.
+
+    Requiere minimo 63 barras (1 trimestre) para HMM estadisticamente estable.
     """
-    if len(closes) < 63:
-        return None
+    sym_usd = PARES[sym][0]
+    barras  = st.session_state.get("hmm_barras", {})
+    precios = barras.get(sym_usd, [])
+
+    if len(precios) < 63:
+        return "🔴"
 
     try:
         from hmmlearn.hmm import GaussianHMM
-        closes_arr  = np.array(closes, dtype=float)
-        log_returns = np.diff(np.log(closes_arr)).reshape(-1, 1)
 
-        model = GaussianHMM(n_components=2, random_state=42, n_iter=200)
-        model.fit(log_returns)
+        # Entrenar solo con cierres historicos (sin look-ahead)
+        ret_hist = np.diff(np.log(precios)).reshape(-1, 1)
+        m = GaussianHMM(n_components=2, random_state=42, n_iter=200).fit(ret_hist)
 
-        means    = model.means_.flatten()
-        bull_idx = np.argmax(means)
+        means = m.means_.flatten()
+        bull  = int(np.argmax(means))
 
-        mean_bull = means[bull_idx]
-        mean_bear = means[1 - bull_idx]
+        # Si la media del estado "bull" es negativa, ambos estados son
+        # bajistas (mercado bear con rebotes violentos, no bull genuino)
+        if means[bull] < -0.0005:
+            return "🔴"
 
-        # Guard: si el estado "bull" tiene media negativa, ambos son bajistas
-        if mean_bull < -0.0005:
-            return {"mean_bull": mean_bull, "mean_bear": mean_bear, "state": "🔴"}
+        # Predecir incluyendo retorno intradiario de hoy si esta disponible
+        # precio actual (snapshot Alpaca) vs ultimo cierre historico
+        ret_pred = ret_hist.copy()
+        if historial:
+            precio_actual = historial[-1].get("usd", {}).get(sym_usd)
+            ultimo_cierre = precios[-1]
+            if precio_actual and ultimo_cierre > 0:
+                ret_hoy = np.log(precio_actual / ultimo_cierre)
+                ret_pred = np.vstack([ret_hist, [[ret_hoy]]])
+                logger.info(f"HMM {sym_usd}: ret_hoy={ret_hoy:+.4f} ({precio_actual:.2f} vs cierre {ultimo_cierre:.2f})")
 
-        return {"mean_bull": mean_bull, "mean_bear": mean_bear, "state": "🟢"}
+        estado = m.predict(ret_pred)[-1]
+        return "🟢" if estado == bull else "🔴"
+    except:
+        return "🔴"
 
-    except Exception as e:
-        logger.error(f"HMM error para {sym_usd}: {e}")
-        return None
+# ── CCL ───────────────────────────────────────────────────
+def calcular_ccl(p_ars, p_usd):
+    ccl_map = {}
+    for sym, (sym_usd, ratio) in PARES.items():
+        a = p_ars.get(sym)
+        u = p_usd.get(sym_usd)
+        if a and u and u > 0:
+            ccl_map[sym] = (a / u) * ratio
+    avg = statistics.median(ccl_map.values()) if ccl_map else 0
+    return ccl_map, avg
 
-
-# ── FETCH PRECIOS ──────────────────────────────────────────
-def fetch_precios():
-    """
-    Obtiene precios ARS (IOL) y USD (Alpaca) en tiempo real.
-
-    FIX: iols_cedears e iols_merval se construyen desde las claves IOL
-    del dict PARES, no desde los símbolos Alpaca (v[0]). Antes, TGSU2→"TGS"
-    y TXR→"TX" se enviaban al panel CEDEAR de IOL con tickers incorrectos.
-
-    Retorna (p_ars, p_usd) o (None, None) si alguno falla completamente.
-    """
-    iol    = st.session_state.get("iol")
-    alpaca = st.session_state.get("alpaca")
-    if not iol or not alpaca:
-        return None, None
-
-    # Precios ARS: separar por clave IOL (no por símbolo Alpaca)
-    iols_cedears = [k for k in PARES.keys() if k not in MERVAL_SET]
-    iols_merval  = [k for k in PARES.keys() if k in MERVAL_SET]
-
-    p_ars = {}
+# ── GMAIL ─────────────────────────────────────────────────
+def enviar_mail(subject: str, cuerpo: str):
+    g = st.session_state.gmail
+    if not g["user"]:
+        return
     try:
-        if iols_cedears:
-            p_ars.update(iol.get_panel(iols_cedears))
+        msg = MIMEMultipart()
+        msg["From"] = msg["To"] = g["user"]
+        msg["Subject"] = subject
+        msg.attach(MIMEText(cuerpo, "plain"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(g["user"], g["pass"])
+            smtp.send_message(msg)
+        logger.info(f"📧 Mail enviado: {subject}")
     except Exception as e:
-        logger.warning(f"fetch_precios IOL CEDEARs error: {e}")
+        logger.error(f"Gmail error: {e}")
 
+def alerta_señales(señales, ccl_avg):
+    if not señales:
+        return
+    ahora = hora_argentina()
+    nuevas = [s for s in señales
+              if (ahora - st.session_state.alertadas.get(s["sym"], datetime(2000,1,1,tzinfo=TZ_ARG))).seconds > 1800]
+    if not nuevas:
+        return
+    for s in nuevas:
+        st.session_state.alertadas[s["sym"]] = ahora
+    cuerpo = f"📊 GG HMM-CCL — Señales Activas\n"
+    cuerpo += f"CCL Promedio: ${ccl_avg:.2f} | {ahora.strftime('%d/%m/%Y %H:%M:%S')}\n"
+    cuerpo += f"{'─'*40}\n"
+    for s in nuevas:
+        cuerpo += f"{s['sym']:<8} {s['dev']:>+7.2f}%  {s['clima']}  {s['señal']}\n"
+    enviar_mail(f"🚨 GG: {len(nuevas)} señal(es) | CCL ${ccl_avg:.0f}", cuerpo)
+
+def alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg):
+    if not ops_abiertas and not ops_cerradas:
+        return
+    ahora = hora_argentina()
+    cuerpo = f"💹 GG HMM-CCL — Operación Ejecutada\n"
+    cuerpo += f"CCL Promedio: ${ccl_avg:.2f} | {ahora.strftime('%d/%m/%Y %H:%M:%S')}\n"
+    cuerpo += f"{'─'*40}\n"
+    if ops_abiertas:
+        cuerpo += f"\n🟢 COMPRAS ({len(ops_abiertas)}):\n"
+        for pos in ops_abiertas:
+            cuerpo += f"  {pos.symbol:<8} ${pos.precio_entry:,.1f} | Monto: ${pos.monto_entry:,.0f}\n"
+    if ops_cerradas:
+        cuerpo += f"\n🔴 VENTAS ({len(ops_cerradas)}):\n"
+        for op in ops_cerradas:
+            emoji = "✅" if op.pnl > 0 else "❌"
+            cuerpo += f"  {emoji} {op.symbol:<8} PnL: ${op.pnl:+,.0f} ({op.pnl_pct:+.2f}%) [{op.motivo_cierre}]\n"
+    n = len(ops_abiertas) + len(ops_cerradas)
+    enviar_mail(f"💹 GG: {n} op(s) ejecutada(s) | CCL ${ccl_avg:.0f}", cuerpo)
+
+# ── FETCH ─────────────────────────────────────────────────
+def fetch_precios(ts_key):
+    iol    = st.session_state.iol
+    alpaca = st.session_state.alpaca
+    p_ars  = {}
+
+    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXR","TGSU2","SUPV"}
+
+    # Batch 1 — CEDEARs (1 request)
     try:
-        if iols_merval:
-            p_ars.update(iol.get_panel(iols_merval))
+        data = iol.get_panel("CEDEARs")
+        for t in data:
+            if t["simbolo"] in CEDEARS_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
     except Exception as e:
-        logger.warning(f"fetch_precios IOL MerVal error: {e}")
+        st.warning(f"IOL CEDEARs batch: {e}")
 
-    # Precios USD: snapshots Alpaca
-    p_usd = {}
+    # Batch 2 — MerVal (1 request)
     try:
-        syms_usd  = list({v[0] for v in PARES.values()})
-        snapshots = alpaca.get_snapshots(syms_usd)
-        p_usd     = {k: v["price"] for k, v in snapshots.items() if "price" in v}
+        data = iol.get_panel("MerVal")
+        for t in data:
+            if t["simbolo"] in MERVAL_SET:
+                p_ars[t["simbolo"]] = t["ultimoPrecio"]
     except Exception as e:
-        logger.warning(f"fetch_precios Alpaca error: {e}")
+        st.warning(f"IOL MerVal batch: {e}")
 
-    return p_ars if p_ars else None, p_usd if p_usd else None
-
-
-def fetch_precios_fallback(historial: list) -> tuple:
-    """
-    Reconstruye p_ars y p_usd desde el último snapshot persistido en Sheets.
-
-    Fórmula inversa: CCL = (p_ars / p_usd) * ratio → p_ars = CCL * p_usd / ratio
-
-    Solo se usa cuando IOL no devuelve datos (fuera de horario o error de API).
-    Los valores son los últimos conocidos — válidos para visualización, pero
-    el simulador NO abrirá nuevas posiciones fuera del horario de compra.
-
-    Retorna ({sym_iol: precio_ars}, {sym_usd: precio_usd}) o ({}, {}) si no hay datos.
-    """
-    if not historial:
-        logger.warning("fetch_precios_fallback: historial vacío")
-        return {}, {}
-
-    # Buscar el snapshot más reciente que tenga datos USD
-    ultimo = None
-    for snap in reversed(historial):
-        if snap.get("usd") and snap.get("ccl"):
-            ultimo = snap
-            break
-
-    if not ultimo:
-        logger.warning("fetch_precios_fallback: ningún snapshot con datos USD+CCL")
-        return {}, {}
-
-    p_usd   = ultimo["usd"]   # {sym_usd: precio}
-    ccl_map = ultimo["ccl"]   # {sym_iol: ccl}
-    ts      = ultimo.get("ts", "desconocido")
-
-    p_ars = {}
-    for sym_iol, (sym_usd, ratio) in PARES.items():
-        if sym_iol in ccl_map and sym_usd in p_usd:
-            p_usd_val = p_usd[sym_usd]
-            if p_usd_val > 0 and ratio > 0:
-                p_ars[sym_iol] = (ccl_map[sym_iol] * p_usd_val) / ratio
-
-    logger.info(
-        f"fetch_precios_fallback: {len(p_ars)} precios ARS reconstruidos "
-        f"desde snapshot {ts}"
-    )
+    syms_usd = list({v[0] for v in PARES.values()})
+    snaps    = alpaca.get_snapshots(syms_usd)
+    p_usd    = {s: snaps[s]["last"] for s in snaps if snaps[s].get("last")}
     return p_ars, p_usd
 
-
-# ── LÓGICA DE SEÑALES ──────────────────────────────────────
-def calcular_climas():
-    """
-    Calcula clima HMM para cada símbolo USD.
-
-    Retorna dict {sym_iol: clima_str} donde clima_str es "🟢 BULL" o "🔴 BEAR".
-    """
-    _refrescar_barras_si_necesario()
-    barras = st.session_state.get("hmm_barras", {})
-    climas = {}
-
-    for sym_iol, (sym_usd, _) in PARES.items():
-        closes = barras.get(sym_usd, [])
-        if not closes:
-            climas[sym_iol] = "🔴 BEAR"
-            continue
-
-        # Agregar retorno intradiario como última observación
-        closes_aug = closes
-        if len(closes) >= 2:
-            ultima_cierre_1d   = closes[-1]
-            ultimos_snapshots  = st.session_state.historial[-1:] if st.session_state.historial else []
-            if ultimos_snapshots:
-                snap          = ultimos_snapshots[0]
-                precio_actual = snap.get("usd", {}).get(sym_usd, ultima_cierre_1d)
-                if precio_actual > 0:
-                    log_ret_intra = np.log(precio_actual / ultima_cierre_1d)
-                    closes_aug    = list(closes) + [ultima_cierre_1d * np.exp(log_ret_intra)]
-
-        result = entrenar_hmm_simbolo(sym_usd, closes_aug)
-        if result:
-            climas[sym_iol] = "🟢 BULL" if result["state"] == "🟢" else "🔴 BEAR"
-        else:
-            climas[sym_iol] = "🔴 BEAR"
-
-    return climas
-
-
-def calcular_señales(ccl_map: dict, ccl_avg: float, climas: dict) -> dict:
-    """Calcula señales de compra/venta para cada símbolo."""
-    señales = {}
-    for sym_iol in PARES:
-        ccl = ccl_map.get(sym_iol, 0)
-        if ccl <= 0 or ccl_avg == 0:
-            señales[sym_iol] = ("🔴 SIN DATO", None, None)
-            continue
-
-        dev   = (ccl / ccl_avg - 1) * 100
-        clima = climas.get(sym_iol, "🔴 BEAR")
-
-        # Umbral específico del símbolo (consistente con el simulador)
-        umbral = UMBRAL_COMPRA_VOLATIL if sym_iol in SIMBOLOS_VOLATILES else -0.50
-
-        if dev >= 0.15:
-            señal = "🔴 VENTA"
-        elif dev < umbral and clima == "🟢 BULL":
-            señal = "🚀 COMPRA"
-        elif dev < -0.50 and clima == "🔴 BEAR":
-            señal = "🟡 ESPERA (sin clima)"
-        else:
-            señal = "⚪ OBSERVAR"
-
-        señales[sym_iol] = (señal, dev, clima)
-
-    return señales
-
-
-# ── ALERTAS ────────────────────────────────────────────────
-def enviar_email(asunto: str, cuerpo: str):
-    """Envía alerta por Gmail."""
-    gmail = st.session_state.get("gmail")
-    if not gmail:
-        return
-    try:
-        msg            = MIMEMultipart()
-        msg["From"]    = gmail["user"]
-        msg["To"]      = gmail["user"]
-        msg["Subject"] = asunto
-        msg.attach(MIMEText(cuerpo, "plain"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail["user"], gmail["pass"])
-            server.sendmail(gmail["user"], gmail["user"], msg.as_string())
-        logger.info(f"✉️ Email enviado: {asunto}")
-    except Exception as e:
-        logger.error(f"Email error: {e}")
-
-
-def alerta_señales(señales_alerta: list, ccl_avg: float):
-    """Alerta de señales detectadas."""
-    if not señales_alerta:
-        return
-    for sym, dev, clima in señales_alerta:
-        cuerpo = (
-            f"🚀 COMPRA detectada\n"
-            f"Activo: {sym}\n"
-            f"Desvío: {dev:+.2f}%\n"
-            f"Clima: {clima}\n"
-            f"CCL promedio: ${ccl_avg:.2f}"
-        )
-        enviar_email(f"🚨 GG: SEÑAL {sym}", cuerpo)
-        time.sleep(0.5)
-
-
-def alerta_operacion(abiertas: list, cerradas: list, ccl_avg: float):
-    """Alerta de operaciones ejecutadas."""
-    for pos in abiertas:
-        cuerpo = (
-            f"Compra ejecutada\n"
-            f"Activo: {pos.symbol}\n"
-            f"Cantidad: {pos.cantidad:.2f}\n"
-            f"Precio: ${pos.precio_entry:.2f}\n"
-            f"Monto: ${pos.monto_entry:,.0f}"
-        )
-        enviar_email(f"💹 GG: COMPRA {pos.symbol}", cuerpo)
-        time.sleep(0.5)
-
-    for op in cerradas:
-        emoji  = "✅" if op.pnl > 0 else "❌"
-        cuerpo = (
-            f"{emoji} Operación cerrada [{op.motivo_cierre}]\n"
-            f"Activo: {op.symbol}\n"
-            f"PnL: ${op.pnl:+,.0f} ({op.pnl_pct:+.2f}%)"
-        )
-        enviar_email(f"💹 GG: CIERRE {op.symbol}", cuerpo)
-        time.sleep(0.5)
-
-
-# ── MAIN ───────────────────────────────────────────────────
+# ── MAIN ──────────────────────────────────────────────────
 def main():
+    st.title("📊 GG Investments 🦅🤑")
+    st.caption("IOL (ARS) + Alpaca (USD) | HMM Climate | Simulador Intradiario")
+
     if not init_state():
-        st.error("❌ Error inicializando sistema (faltan credenciales)")
+        st.error("⚠️ Configurar credenciales en Streamlit Secrets.")
         return
 
-    iol      = st.session_state.iol
-    alpaca   = st.session_state.alpaca
-    sheets   = st.session_state.sheets
-    sim      = st.session_state.sim
+    sheets    = st.session_state.sheets
+    sim       = st.session_state.sim
     historial = st.session_state.historial
+    hora      = hora_argentina()
+    ahora     = hora.time()
 
-    ahora = hora_argentina()
-    st.title("📊 GG Investments — CCL Arbitrage")
-    st.caption(f"⏰ {ahora.strftime('%Y-%m-%d %H:%M:%S')} ART")
+    # Refrescar barras 1D para HMM (cada 10 min, no cada 60s)
+    _refrescar_barras_si_necesario()
 
-    # ── GUARD DE HORARIO ──────────────────────────────────────────────────────
-    # IOL no sirve precios fuera de la sesión bursátil.
-    # En lugar de mostrar "Error fetching precios", se muestra el estado del
-    # simulador y se duerme 5 min para no desperdiciar requests de la free tier.
-    # ─────────────────────────────────────────────────────────────────────────
-    if not (HORA_SESION_INICIO <= ahora.time() <= HORA_SESION_FIN):
-        st.info("🌙 Mercado cerrado — próxima sesión L-V desde las 10:30 hs")
-        resumen = sim.resumen({})
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Capital Total",  f"${resumen['capital_total']:,.0f}",
-                  f"{resumen['pnl_pct']:+.2f}%")
-        c2.metric("Efectivo",       f"${resumen['efectivo']:,.0f}")
-        c3.metric("Win Rate",       f"{resumen['win_rate']:.0f}%",
-                  f"{resumen['operaciones_total']} ops")
-        c4.metric("Posiciones",     str(resumen['posiciones_abiertas']))
-        st.caption(f"🔄 Próxima revisión en 5 min")
-        time.sleep(300)
-        st.rerun()
-        return
-    # ─────────────────────────────────────────────────────────────────────────
+    # Warmup: los primeros 2 ciclos no se opera para estabilizar HMM y precios
+    WARMUP_CICLOS = 2
+    if 'ciclos_warmup' not in st.session_state:
+        st.session_state.ciclos_warmup = 0
+    en_warmup = st.session_state.ciclos_warmup < WARMUP_CICLOS
+    st.session_state.ciclos_warmup += 1
 
-    # Fetch de precios en tiempo real
-    p_ars, p_usd = fetch_precios()
+    ts_key = str(int(time.time() // REFRESH_SECONDS))
+    p_ars, p_usd = fetch_precios(ts_key)
 
-    # [FIX] Fallback a último snapshot de Sheets si IOL devuelve vacío
-    usando_fallback = False
-    if not p_ars or not p_usd:
-        logger.warning("fetch_precios falló — intentando fallback desde Sheets")
-        p_ars_fb, p_usd_fb = fetch_precios_fallback(historial)
+    ccl_map, ccl_avg = calcular_ccl(p_ars, p_usd)
 
-        if p_ars_fb and p_usd_fb:
-            p_ars           = p_ars_fb
-            p_usd           = p_usd_fb
-            usando_fallback = True
-            st.warning(
-                "⚠️ IOL sin datos — mostrando últimos precios conocidos desde Sheets. "
-                "El simulador no abrirá nuevas posiciones."
-            )
+    if ccl_map:
+        historial.append({"ts": hora.isoformat(), "ccl": ccl_map, "avg": ccl_avg, "usd": p_usd})
+        if len(historial) > HMM_MAX_SNAPSHOTS:
+            historial[:] = historial[-HMM_MAX_SNAPSHOTS:]
+        sheets.guardar_snapshot_ccl(ccl_map, ccl_avg, p_usd=p_usd)
+
+    # ── Señales y climas ───────────────────────────────────
+    rows, señales_alerta, climas = [], [], {}
+    for sym, ccl in ccl_map.items():
+        dev   = (ccl / ccl_avg - 1) * 100 if ccl_avg else 0
+        clima = clima_hmm(sym, historial)
+        climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
+
+        if dev <= -0.5:
+            desvio_color = "🟢"
+        elif dev >= 0.1:
+            desvio_color = "🔴"
         else:
-            st.error("❌ Sin datos de precios (IOL offline y Sheets sin historial)")
-            st.caption("🔄 Reintentando en 60s")
-            time.sleep(REFRESH_SECONDS)
-            st.rerun()
-            return
+            desvio_color = "🟡"
 
-    # Cálculo de CCL
-    ccl_map = {}
-    for sym_iol, (sym_usd, ratio) in PARES.items():
-        if sym_iol in p_ars and sym_usd in p_usd:
-            p_a = p_ars[sym_iol]
-            p_u = p_usd[sym_usd]
-            if p_a > 0 and p_u > 0:
-                ccl_map[sym_iol] = (p_a / p_u) * ratio
-
-    if not ccl_map:
-        st.error("❌ Sin datos de CCL")
-        time.sleep(REFRESH_SECONDS)
-        st.rerun()
-        return
-
-    ccl_avg = statistics.median(ccl_map.values())
-
-    # HMM y señales
-    climas  = calcular_climas()
-    señales = calcular_señales(ccl_map, ccl_avg, climas)
-
-    # Procesar ciclo del simulador
-    rows           = []
-    señales_alerta = []
-
-    for sym_iol, (sym_usd, ratio) in PARES.items():
-        if sym_iol not in ccl_map or sym_iol not in p_ars:
-            continue
-
-        ccl        = ccl_map[sym_iol]
-        dev        = (ccl / ccl_avg - 1) * 100
-        clima      = climas.get(sym_iol, "🔴 BEAR")
-        señal_txt, _, _ = señales[sym_iol]
-
-        desvio_color = "🔴" if dev >= 0.15 else "🟢" if dev < -0.50 else "🟡"
+        if dev <= -0.5 and clima == "🟢":
+            accion = "🚀 COMPRA"
+        elif dev >= 0.1:
+            accion = "🔴 VENTA"
+        else:
+            accion = "⏳ ESPERAR"
 
         rows.append({
-            "sym":         sym_iol,
-            "p_ars":       p_ars[sym_iol],
-            "p_usd":       p_usd.get(sym_usd, 0),
-            "ccl":         ccl,
-            "dev":         dev,
-            "desvio_color": desvio_color,
-            "clima":       clima,
-            "accion":      señal_txt,
+            "sym": sym, "ccl": ccl, "dev": dev, "clima": clima,
+            "desvio_color": desvio_color, "accion": accion,
+            "p_ars": p_ars.get(sym, 0),
+            "p_usd": p_usd.get(PARES[sym][0], 0),
         })
+        if accion == "🚀 COMPRA":
+            señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
+        elif accion == "🔴 VENTA":
+            if sim.posiciones_abiertas_count(sym) > 0:
+                señales_alerta.append({"sym": sym, "dev": dev, "clima": clima, "señal": accion})
 
-        if "COMPRA" in señal_txt:
-            señales_alerta.append((sym_iol, dev, clima))
+    # ── Simulador ──────────────────────────────────────────
+    if HORA_APERTURA <= ahora:
+        ahora_sim = dtime(0, 0) if en_warmup else ahora
+        resultado = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora_sim)
+        ops_cerradas = resultado.get("cerradas", []) + resultado.get("forzadas", [])
+        ops_abiertas = resultado.get("abiertas", [])
+        hay_cambios  = bool(ops_abiertas or ops_cerradas)
 
-    # Persistir snapshots HMM (solo con datos reales, no fallback)
-    if not usando_fallback:
-        snapshot_usd = {
-            sym_usd: p_usd[sym_usd]
-            for _, (sym_usd, _) in PARES.items()
-            if sym_usd in p_usd
-        }
-        if snapshot_usd:
-            historial.append(snapshot_usd)
-            if len(historial) > HMM_MAX_SNAPSHOTS:
-                historial = historial[-HMM_MAX_SNAPSHOTS:]
-            st.session_state.historial = historial
-            sheets.guardar_historial_ccl(historial)
+        # FIX: guard con clave compuesta (id, ts_entry) para sobrevivir reinicios.
+        # El _op_counter se resetea cada jornada, por lo que el mismo ID (ej. P0001)
+        # puede aparecer en días distintos. La clave compuesta es globalmente única.
+        for op in ops_cerradas:
+            clave = (op.id, op.ts_entry)
+            if clave not in st.session_state.ops_guardadas:
+                sheets.guardar_operacion(sim.fila_sheets_operacion(op))
+                st.session_state.ops_guardadas.add(clave)
 
-    # Procesar ciclo del simulador
-    # Si usamos fallback (IOL offline), se pasa ahora fuera de horario de compra
-    # para que el simulador evalúe cierres pero no abra nuevas posiciones.
-    ahora_sim = ahora.time() if not usando_fallback else dtime(17, 0)
-    resultado    = sim.procesar_ciclo(ccl_map, ccl_avg, p_ars, climas, ahora_sim)
-    ops_abiertas = resultado.get("abiertas", [])
-    ops_cerradas = resultado.get("cerradas", [])
-    hay_cambios  = bool(ops_abiertas or ops_cerradas)
+        ciclo_actual = int(time.time() // REFRESH_SECONDS)
+        if hay_cambios or ciclo_actual % 5 == 0:
+            sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
 
-    # Persistencia operaciones con clave compuesta (id, ts_entry)
-    for op in ops_cerradas:
-        clave = (op.id, op.ts_entry)
-        if clave not in st.session_state.ops_guardadas:
-            sheets.guardar_operacion(sim.fila_sheets_operacion(op))
-            st.session_state.ops_guardadas.add(clave)
+        if hay_cambios:
+            sheets.guardar_posiciones(sim)
+            sheets.guardar_estado_simulador(sim)
 
-    ciclo_actual = int(time.time() // REFRESH_SECONDS)
-    if hay_cambios or ciclo_actual % 5 == 0:
-        sheets.guardar_estado_cartera(sim.fila_sheets_estado(p_ars))
+        alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
 
-    if hay_cambios:
-        sheets.guardar_posiciones(sim)
-        sheets.guardar_estado_simulador(sim)
-
-    alerta_operacion(ops_abiertas, ops_cerradas, ccl_avg)
-
-    # ── TODO: REAL TRADING ─────────────────────────────────────────────────
-    # Cuando se opere con dinero real en IOL, agregar aquí:
-    #
-    # for pos in ops_abiertas:
-    #     iol.place_order(
-    #         symbol   = pos.symbol,
-    #         cantidad = pos.cantidad,
-    #         precio   = pos.precio_entry,
-    #         tipo     = "compra",
-    #         mercado  = "bCBA",
-    #     )
-    #
-    # for op in ops_cerradas:
-    #     if op.motivo_cierre != "CIERRE_FORZADO":
-    #         iol.place_order(
-    #             symbol   = op.symbol,
-    #             cantidad = op.cantidad,
-    #             precio   = op.precio_exit,
-    #             tipo     = "venta",
-    #             mercado  = "bCBA",
-    #         )
-    # ──────────────────────────────────────────────────────────────────────
+        # ── TODO: REAL TRADING ─────────────────────────────
+        # Cuando se opere con dinero real en IOL, agregar aquí:
+        #
+        # for pos in ops_abiertas:
+        #     iol.place_order(
+        #         symbol   = pos.symbol,
+        #         cantidad = pos.cantidad,
+        #         precio   = pos.precio_entry,
+        #         tipo     = "compra",
+        #         mercado  = "bCBA",
+        #     )
+        #
+        # for op in ops_cerradas:
+        #     if op.motivo_cierre != "CIERRE_FORZADO":
+        #         iol.place_order(
+        #             symbol   = op.symbol,
+        #             cantidad = op.cantidad,
+        #             precio   = op.precio_exit,
+        #             tipo     = "venta",
+        #             mercado  = "bCBA",
+        #         )
+        # ──────────────────────────────────────────────────
 
     alerta_señales(señales_alerta, ccl_avg)
 
-    # ── KPIs ──────────────────────────────────────────────────────────────
+    # ── KPIs ──────────────────────────────────────────────
     resumen = sim.resumen(p_ars)
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("CCL Promedio",  f"${ccl_avg:.2f}")
-    c2.metric("Capital Total", f"${resumen['capital_total']:,.0f}",
-              f"{resumen['pnl_pct']:+.2f}%")
-    c3.metric("Efectivo",      f"${resumen['efectivo']:,.0f}")
-    c4.metric("En Posiciones", f"${resumen['en_posiciones']:,.0f}")
-    c5.metric("Win Rate",      f"{resumen['win_rate']:.0f}%",
-              f"{resumen['operaciones_total']} ops")
+    c1.metric("CCL Promedio",   f"${ccl_avg:.2f}")
+    c2.metric("Capital Total",  f"${resumen['capital_total']:,.0f}", f"{resumen['pnl_pct']:+.2f}%")
+    c3.metric("Efectivo",       f"${resumen['efectivo']:,.0f}")
+    c4.metric("En Posiciones",  f"${resumen['en_posiciones']:,.0f}")
+    c5.metric("Win Rate",       f"{resumen['win_rate']:.0f}%", f"{resumen['operaciones_total']} ops")
 
-    # ── Estado mercado ─────────────────────────────────────────────────────
-    t = ahora.time()
-    if t < HORA_APERTURA:
+    # ── Estado mercado ─────────────────────────────────────
+    if ahora < HORA_APERTURA:
         st.warning(f"⏳ Mercado abre a las {HORA_APERTURA.strftime('%H:%M')} hs")
-    elif t >= HORA_CIERRE:
+    elif ahora >= HORA_CIERRE:
         st.error("🔴 16:50 hs — Cierre forzado de posiciones activo")
-    elif t >= HORA_STOP_COMPRA:
+    elif ahora >= HORA_STOP_COMPRA:
         st.warning("⚠️ 16:30 hs — Sin nuevas compras | Solo cierres")
     else:
-        st.success(
-            f"🟢 Mercado abierto | {resumen['posiciones_abiertas']} posiciones abiertas"
-        )
+        st.success(f"🟢 Mercado abierto | {resumen['posiciones_abiertas']} posiciones abiertas")
 
-    # ── Gráfico ────────────────────────────────────────────────────────────
+    # ── Gráfico ────────────────────────────────────────────
     rows_sorted = sorted(rows, key=lambda x: x["dev"])
     colors = [
         "#00C851" if r["accion"] == "🚀 COMPRA"
@@ -700,12 +501,8 @@ def main():
         text=[f"{r['dev']:+.2f}%" for r in rows_sorted],
         textposition="outside",
     ))
-    fig.add_hline(y=0.15,  line_dash="dash", line_color="#FF4444",
-                  annotation_text="+0.15%")
-    fig.add_hline(y=-0.50, line_dash="dash", line_color="#00C851",
-                  annotation_text="-0.50%")
-    fig.add_hline(y=-0.65, line_dash="dash", line_color="#FFB800",
-                  annotation_text="-0.65% (volátiles)")
+    fig.add_hline(y=0.15, line_dash="dash", line_color="#FF4444", annotation_text="+0.15%")
+    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.50%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
@@ -713,7 +510,7 @@ def main():
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── Tabla señales ──────────────────────────────────────────────────────
+    # ── Tabla señales ──────────────────────────────────────
     st.subheader("📋 Señales en Tiempo Real")
     df = pd.DataFrame([{
         "Activo": r["sym"],
@@ -726,19 +523,17 @@ def main():
     } for r in rows_sorted])
     st.dataframe(df, use_container_width=True, hide_index=True)
 
-    # ── Posiciones abiertas ────────────────────────────────────────────────
+    # ── Posiciones abiertas ────────────────────────────────
     if any(sim.posiciones.values()):
         st.subheader("💼 Posiciones Abiertas")
         for sym, poss in sim.posiciones.items():
             for pos in poss:
-                p_entry = getattr(pos, "precio_entry", 0)
-                m_entry = getattr(pos, "monto_entry",  0)
-                p_id    = getattr(pos, "id",            "S/N")
+                p_entry = getattr(pos, 'precio_entry', 0)
+                m_entry = getattr(pos, 'monto_entry', 0)
+                p_id    = getattr(pos, 'id', 'S/N')
 
                 if p_entry <= 0 or m_entry <= 0:
-                    st.warning(
-                        f"⚠️ Dato inválido en {sym} (ID: {p_id}). Revisar Google Sheets."
-                    )
+                    st.warning(f"⚠️ Dato inválido en {sym} (ID: {p_id}). Revisar Google Sheets.")
                     continue
 
                 precio_actual = p_ars.get(sym, p_entry)
@@ -746,10 +541,7 @@ def main():
                 pnl_pct = ((precio_actual / p_entry) - 1) * 100
                 emoji   = "✅" if pnl >= 0 else "🔻"
 
-                with st.expander(
-                    f"{emoji} {p_id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%)",
-                    expanded=True
-                ):
+                with st.expander(f"{emoji} {p_id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%)", expanded=True):
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Entrada",   f"${p_entry:,.1f}")
                     c2.metric("Actual",    f"${precio_actual:,.1f}", f"{pnl_pct:+.2f}%")
@@ -757,13 +549,9 @@ def main():
                     c4.metric("Cantidad",  f"{pos.cantidad:.2f} u.")
 
                     btn_key = f"v_manual_{p_id}_{sym}_{int(p_entry)}"
-                    if st.button(
-                        f"🔴 Vender {sym} ({p_id})", key=btn_key, type="primary"
-                    ):
+                    if st.button(f"🔴 Vender {sym} ({p_id})", key=btn_key, type="primary"):
                         op = sim.cerrar_posicion(sym, pos, precio_actual, "VENTA_MANUAL")
-                        sim.posiciones[sym] = [
-                            p for p in sim.posiciones[sym] if p.id != pos.id
-                        ]
+                        sim.posiciones[sym] = [p for p in sim.posiciones[sym] if p.id != pos.id]
                         sheets.guardar_operacion(sim.fila_sheets_operacion(op))
                         sheets.guardar_posiciones(sim)
                         sheets.guardar_estado_simulador(sim)
@@ -771,35 +559,27 @@ def main():
                         time.sleep(1)
                         st.rerun()
 
-    # ── Historial ops ──────────────────────────────────────────────────────
+    # ── Historial ops ──────────────────────────────────────
     with st.expander("📜 Historial de Operaciones"):
         try:
             ops = sheets.cargar_operaciones()
             if ops:
-                cols = [
-                    "ID", "Activo", "Tipo", "Cant.", "P.Entry", "P.Exit",
-                    "M.Entry", "M.Exit", "PnL", "PnL%",
-                    "Apertura", "Cierre", "Motivo"
-                ]
-                st.dataframe(
-                    pd.DataFrame(ops, columns=cols),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                cols = ["ID","Activo","Tipo","Cant.","P.Entry","P.Exit",
+                        "M.Entry","M.Exit","PnL","PnL%","Apertura","Cierre","Motivo"]
+                st.dataframe(pd.DataFrame(ops, columns=cols), use_container_width=True, hide_index=True)
             else:
                 st.info("Sin operaciones registradas aún.")
         except Exception as e:
             st.warning(f"⚠️ Error cargando historial (Sheets rate limit): {e}")
 
-    # ── Sidebar ────────────────────────────────────────────────────────────
+    # ── Sidebar ────────────────────────────────────────────
     with st.sidebar:
         st.title("⚙️ Config")
         st.markdown(f"**Snapshots HMM:** {len(historial)}")
-        st.markdown(f"**Actualizado:** {ahora.strftime('%H:%M:%S')}")
-        if usando_fallback:
-            st.warning("📦 Usando precios desde Sheets (fallback)")
+        st.markdown(f"**Actualizado:** {hora.strftime('%H:%M:%S')}")
 
-        # Debug barras HMM
+        # Debug barras HMM: muestra cuántas barras tiene cada símbolo en cache.
+        # ✅ = >= 63 barras (HMM activo)  |  ⚠️ = < 63 (HMM fallback 🔴)
         barras_cache = st.session_state.get("hmm_barras", {})
         if barras_cache:
             ts_cache = st.session_state.get("hmm_barras_ts")
@@ -811,11 +591,10 @@ def main():
 
         st.divider()
         st.markdown("**Simulador**")
-        st.markdown("Capital inicial: $10.000.000")
-        st.markdown("Por operación: 15%")
-        st.markdown("Máx./especie: 2")
-        st.markdown("Umbral base: -0.50% | Volátiles: -0.65%")
-        st.markdown("Ventana: 10:30 → 16:50")
+        st.markdown(f"Capital inicial: $10.000.000")
+        st.markdown(f"Por operación: 15%")
+        st.markdown(f"Máx./especie: 2")
+        st.markdown(f"Ventana: 10:30 → 16:50")
         st.divider()
         if st.button("🔄 Reset simulador"):
             sim_nuevo = Simulador()
