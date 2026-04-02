@@ -88,10 +88,9 @@ PARES = {
     "NVDA":  ("NVDA",   24), "TSLA":  ("TSLA",  15),
     "AAPL":  ("AAPL",   20), "META":  ("META",  24),
     "GOOGL": ("GOOGL",  58), "MELI":  ("MELI", 120),
-    "BMA":   ("BMA",    10), "VIST":  ("VIST",   3),
-    "TGSU2": ("TGS",     5), "LOMA":  ("LOMA",   5),
-    "TXR":   ("TX",      4), "GLD":   ("GLD",   50),
-    "IBIT":  ("IBIT",   10), "SPY":   ("SPY",   20),
+    "BMA":   ("BMA",    10), "SPY":   ("SPY",   20),
+    "TGSU2": ("TGS",     5), "IBIT":  ("IBIT",  10), 
+    "GLD":   ("GLD",    50),
 }
 
 # ── SECRETS ───────────────────────────────────────────────
@@ -320,8 +319,8 @@ def fetch_precios(ts_key):
     alpaca = st.session_state.alpaca
     p_ars  = {}
 
-    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY","VIST"}
-    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TXR","TGSU2","SUPV"}
+    CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TGSU2","SUPV"}
 
     # Batch 1 — CEDEARs (1 request)
     try:
