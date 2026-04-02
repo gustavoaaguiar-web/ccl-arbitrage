@@ -127,6 +127,9 @@ else:
 # CLAVE: mediana calculada solo con columnas del grupo → desvíos internamente consistentes
 desvios = calcular_desvios(df_precios, cols_analisis)
 
+# Para simulación y picos: siempre todos los papeles, independiente del selector
+desvios_todos = calcular_desvios(df_precios, ccl_cols)
+
 st.caption(f"📌 {label_grupo} — mediana calculada dentro del grupo")
 st.divider()
 
@@ -357,6 +360,7 @@ st.caption(
     "o cierre forzado a los 30 ciclos. "
     "El PnL se aproxima por el movimiento del desvío CCL (no precio real)."
 )
+st.info(f"📌 Siempre muestra los {len(ccl_cols)} papeles completos — independiente del selector de grupo.")
 
 UMBRAL_COMPRA_SIM = -0.5
 UMBRAL_VENTA_SIM  =  0.10
@@ -416,7 +420,7 @@ def simular_por_simbolo(desvios_df, cols):
             i += 1
     return pd.DataFrame(resultados)
 
-df_sim = simular_por_simbolo(desvios, cols_analisis)
+df_sim = simular_por_simbolo(desvios_todos, ccl_cols)
 
 if df_sim.empty:
     st.info("No hay suficientes operaciones simuladas con el umbral actual.")
@@ -536,7 +540,7 @@ def calcular_picos_ganancia(desvios_df, cols, umbral_entrada=-0.5, ciclos_max=30
     return pd.DataFrame(rows)
 
 try:
-    df_picos = calcular_picos_ganancia(desvios, cols_analisis)
+    df_picos = calcular_picos_ganancia(desvios_todos, ccl_cols)
 except Exception as e:
     st.warning(f"Error calculando picos: {e}")
     df_picos = pd.DataFrame()
