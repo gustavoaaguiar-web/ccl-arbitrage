@@ -49,13 +49,28 @@ def cargar_precios():
     filas = ws.get_all_values()
     if len(filas) < 10:
         return None, None
-    df = pd.DataFrame(filas[1:], columns=filas[0])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-    ccl_cols = [c for c in df.columns[2:] if c != "timestamp"]
-    for col in ccl_cols:
-        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "."), errors="coerce")
-    df = df.dropna(subset=ccl_cols, how="all")
-    return df, ccl_cols
+
+    headers = filas[0]
+    df_raw  = pd.DataFrame(filas[1:], columns=headers)
+
+    # Columnas CCL: todo lo que esté a partir de la posición 2
+    ccl_cols = [c for c in headers[2:] if c and c != "timestamp"]
+
+    # Usar iloc para evitar el AttributeError con nombres de columna duplicados.
+    # df[col] con nombre duplicado devuelve un DataFrame en vez de Series → .str explota.
+    # .iloc[:, idx] siempre devuelve una Series sin importar duplicados.
+    df_out = pd.DataFrame()
+    df_out["timestamp"] = pd.to_datetime(df_raw.iloc[:, 0], errors="coerce")
+
+    for idx, col in enumerate(headers[2:]):
+        if not col or col == "timestamp":
+            continue
+        serie = df_raw.iloc[:, idx + 2].astype(str).str.replace(",", ".", regex=False)
+        df_out[col] = pd.to_numeric(serie, errors="coerce")
+
+    df_out = df_out.dropna(subset=ccl_cols, how="all")
+    return df_out, ccl_cols
+
 
 def calcular_desvios(df_precios, cols):
     """
@@ -598,4 +613,3 @@ else:
         f"El **{pct_captura:.1f}%** de las entradas alcanza un pico ≥ +{salida_a_actual:.2f}% — "
         f"las restantes quedan para Salida B (trailing) o cierre forzado."
     )
-
