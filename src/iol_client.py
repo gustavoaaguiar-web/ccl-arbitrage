@@ -27,15 +27,12 @@ CEDEAR_ADR_PAIRS = {
     "GLD":   {"adr": "GLD",   "ratio": 50},
     "IBIT":  {"adr": "IBIT",  "ratio": 10},
     "SPY":   {"adr": "SPY",   "ratio": 20},
-    "VIST":  {"adr": "VIST",  "ratio": 3},
     "GGAL":  {"adr": "GGAL",  "ratio": 10},
     "YPFD":  {"adr": "YPF",   "ratio": 1},
     "PAMP":  {"adr": "PAM",   "ratio": 25},
     "CEPU":  {"adr": "CEPU",  "ratio": 10},
     "BMA":   {"adr": "BMA",   "ratio": 10},
-    "TXR":   {"adr": "TX",    "ratio": 4},
     "TGSU2": {"adr": "TGS",   "ratio": 5},
-    "SUPV":  {"adr": "SUPV",  "ratio": 5},
 }
 
 
