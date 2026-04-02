@@ -320,7 +320,7 @@ def fetch_precios(ts_key):
     p_ars  = {}
 
     CEDEARS_SET = {"AAPL","AMZN","MSFT","NVDA","TSLA","META","GOOGL","MELI","GLD","IBIT","SPY"}
-    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TGSU2","SUPV"}
+    MERVAL_SET  = {"GGAL","YPFD","PAMP","CEPU","BMA","TGSU2"}
 
     # Batch 1 — CEDEARs (1 request)
     try:
