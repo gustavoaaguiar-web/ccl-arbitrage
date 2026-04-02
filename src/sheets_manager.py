@@ -31,7 +31,7 @@ HMM_MAX_SNAPSHOTS = 500
 HEADERS = {
     "CCL_Historial": ["timestamp", "ccl_avg", "GGAL", "YPFD", "PAMP", "CEPU",
                       "AMZN", "MSFT", "NVDA", "TSLA", "AAPL", "META", "GOOGL",
-                      "MELI", "BMA", "VIST"],
+                      "MELI", "BMA", "GLD", "IBIT", "SPY", TGSU2"],
     "HMM_Historial": ["ts", "sym_usd", "precio"],
     "Operaciones":   ["id", "symbol", "tipo", "cantidad", "precio_entry",
                       "precio_exit", "monto_entry", "monto_exit", "pnl",
