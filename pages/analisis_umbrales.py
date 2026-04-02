@@ -53,7 +53,7 @@ def cargar_precios():
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     ccl_cols = [c for c in df.columns[2:] if c != "timestamp"]
     for col in ccl_cols:
-        df[col] = pd.to_numeric(df[col].str.replace(",", "."), errors="coerce")
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(",", "."), errors="coerce")
     df = df.dropna(subset=ccl_cols, how="all")
     return df, ccl_cols
 
