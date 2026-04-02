@@ -16,7 +16,7 @@ ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
 ALPACA_WS_URL   = "wss://stream.data.alpaca.markets/v2/iex"  # IEX = gratuito
 
 # Símbolos ADR necesarios (del mapping en iol_client.py)
-ADR_SYMBOLS = ["GGAL", "YPF", "PAM", "BMA", "TEO", "BBAR", "CEPU", "LOMA", "SUPV", "TX"]
+ADR_SYMBOLS = ["GGAL", "YPF", "PAM", "BMA", "TGSU2", "CEPU"]
 
 
 class AlpacaClient:
