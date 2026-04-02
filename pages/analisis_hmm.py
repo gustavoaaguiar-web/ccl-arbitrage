@@ -1,7 +1,7 @@
 """
 Análisis Estadístico del Modelo HMM
 =====================================
-Evalúa qué frecuencia de barras (1H, 2H, 4H, 1D) produce el mejor
+Evalúa qué frecuencia de barras (4H, 1D) produce el mejor
 filtro HMM para capturar subidas de precio en los activos del portafolio.
 
 Metodología:
@@ -34,14 +34,13 @@ PARES = {
     "GGAL":  "GGAL",  "YPFD":  "YPF",  "PAMP":  "PAM",  "CEPU": "CEPU",
     "AMZN":  "AMZN",  "MSFT":  "MSFT", "NVDA":  "NVDA", "TSLA": "TSLA",
     "AAPL":  "AAPL",  "META":  "META", "GOOGL": "GOOGL","MELI": "MELI",
-    "BMA":   "BMA",   "VIST":  "VIST",
+    "BMA":   "BMA",   "SPY":   "SPY",  "TGSU2": "TGS",  "IBIT": "IBIT",
+    "GLD":   "GLD"
 }
-LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI"]
-ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA", "VIST"]
+LIQUIDOS  = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "MELI", "IBIT", "GLD"]
+ILIQUIDOS = ["GGAL", "YPFD", "PAMP", "CEPU", "BMA","TGSU2"]
 
 TIMEFRAMES = {
-    "1H":  {"tf": "1Hour",  "dias": 120, "label": "1 hora"},
-    "2H":  {"tf": "2Hour",  "dias": 120, "label": "2 horas"},
     "4H":  {"tf": "4Hour",  "dias": 120, "label": "4 horas"},
     "1D":  {"tf": "1Day",   "dias": 365, "label": "Diaria"},
 }
