@@ -198,7 +198,7 @@ with col2:
 with col3:
     tfs_sel = st.multiselect("Frecuencias a analizar",
                               list(TIMEFRAMES.keys()),
-                              default=["1H", "2H", "4H", "1D"])
+                              default=["4H", "1D"])
 
 if grupo == "Líquidos":
     syms = LIQUIDOS
