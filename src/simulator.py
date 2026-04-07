@@ -102,19 +102,36 @@ class Simulador:
         capital_inicial: Capital en ARS al iniciar.
         umbral_compra:   Desvío CCL mínimo para comprar (%, negativo).
                          Default -0.50. Configurable desde trader_job.py.
+        umbrales_por_hora: Dict opcional con umbrales dinámicos por rango horario.
+                          Si se proporciona, umbral_compra se ignora.
+                          Estructura:
+                          {
+                              "09:50-11:30": -0.0065,
+                              "11:31-15:29": -0.0050,
+                              "15:30-16:29": -0.0065,
+                              "16:30+": None
+                          }
     """
 
     def __init__(
         self,
         capital_inicial: float = CAPITAL_INICIAL,
         umbral_compra: float = UMBRAL_COMPRA_DEFAULT,
+        umbrales_por_hora: dict = None,
     ):
         self.capital_inicial = capital_inicial
         self.efectivo        = capital_inicial
-        self.umbral_compra   = umbral_compra   # único lugar donde vive el umbral
+        self.umbral_compra   = umbral_compra   # fallback si no hay umbrales_por_hora
+        self.umbrales_por_hora = umbrales_por_hora or {}  # Dict de umbrales dinámicos
         self.posiciones:  Dict[str, List[Posicion]] = {}
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
+        
+        # Log inicial
+        if self.umbrales_por_hora:
+            logger.info(f"✅ Simulador inicializado con UMBRALES DINÁMICOS: {self.umbrales_por_hora}")
+        else:
+            logger.info(f"✅ Simulador inicializado con umbral fijo: {self.umbral_compra*100:.2f}%")
 
     # ──────────────────── ESTADO ─────────────────────────
 
@@ -151,6 +168,46 @@ class Simulador:
         if ahora is None:
             ahora = datetime.now().time()
         return ahora >= HORA_APERTURA
+
+    def _obtener_umbral_por_hora(self, ahora: datetime = None) -> Optional[float]:
+        """
+        Retorna el umbral de compra dinámico según la hora ART.
+        
+        Si no hay umbrales_por_hora configurados, retorna el umbral_compra estático.
+        Si la hora está fuera de rango y el rango final retorna None, bloquea compras.
+        
+        Args:
+            ahora: datetime con timezone (si None, usa hora actual)
+        
+        Returns:
+            float (umbral en %, ej. -0.0065) o None (compras bloqueadas)
+        """
+        if not self.umbrales_por_hora:
+            # Fallback al umbral estático
+            return self.umbral_compra / 100  # convertir de % a decimal
+        
+        if ahora is None:
+            from zoneinfo import ZoneInfo
+            tz_arg = ZoneInfo("America/Argentina/Buenos_Aires")
+            ahora = datetime.now(tz_arg)
+        
+        # Extraer hora y minuto
+        hora_min = ahora.hour * 60 + ahora.minute
+        
+        # Definir rangos en minutos desde medianoche
+        rangos = [
+            ((9 * 60 + 50, 11 * 60 + 30), self.umbrales_por_hora.get("09:50-11:30", -0.0065)),
+            ((11 * 60 + 31, 15 * 60 + 29), self.umbrales_por_hora.get("11:31-15:29", -0.0050)),
+            ((15 * 60 + 30, 16 * 60 + 29), self.umbrales_por_hora.get("15:30-16:29", -0.0065)),
+            ((16 * 60 + 30, 23 * 60 + 59), self.umbrales_por_hora.get("16:30+", None)),
+        ]
+        
+        for (inicio, fin), umbral in rangos:
+            if inicio <= hora_min <= fin:
+                return umbral
+        
+        # Fuera de horario
+        return None
 
     # ──────────────────── CONDICIONES DE SALIDA ──────────
 
@@ -348,17 +405,21 @@ class Simulador:
 
         # 4. Abrir posiciones: desvío bajo AND clima BULL
         if self.puede_comprar(ahora):
-            for symbol, ccl in ccl_map.items():
-                if ccl_avg == 0:
-                    continue
-                dev    = (ccl / ccl_avg - 1) * 100
-                clima  = climas.get(symbol, "🔴 BEAR")
-                precio = precios_ars.get(symbol, 0)
+            # Obtener umbral activo (dinámico o estático)
+            umbral_activo = self._obtener_umbral_por_hora(ahora)
+            
+            if umbral_activo is not None:  # Si está bloqueado, umbral_activo será None
+                for symbol, ccl in ccl_map.items():
+                    if ccl_avg == 0:
+                        continue
+                    dev    = (ccl / ccl_avg - 1) * 100
+                    clima  = climas.get(symbol, "🔴 BEAR")
+                    precio = precios_ars.get(symbol, 0)
 
-                if dev < self.umbral_compra and clima == "🟢 BULL" and precio > 0:
-                    pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
-                    if pos:
-                        abiertas.append(pos)
+                    if dev < umbral_activo * 100 and clima == "🟢 BULL" and precio > 0:
+                        pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
+                        if pos:
+                            abiertas.append(pos)
 
         return {"abiertas": abiertas, "cerradas": cerradas, "forzadas": forzadas}
 
