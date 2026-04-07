@@ -121,7 +121,16 @@ def init_state():
         sh.conectar()
         st.session_state.sheets   = sh
         st.session_state.historial = sh.cargar_historial_ccl()
-        sim = Simulador()
+        
+        # Umbrales dinámicos por franja horaria
+        umbrales_por_hora = {
+            "09:50-11:30": -0.0065,     # Apertura — más exigente
+            "11:31-15:29": -0.0050,     # Mediodía — estándar
+            "15:30-16:29": -0.0065,     # Cierre — más exigente
+            "16:30+": None              # Bloqueado
+        }
+        
+        sim = Simulador(umbrales_por_hora=umbrales_por_hora)
         sh.cargar_estado_simulador(sim)
         sh.cargar_posiciones(sim)
         st.session_state.sim = sim  # FIX: asignar sim a session_state
@@ -143,6 +152,7 @@ def init_state():
         st.session_state.gmail        = {"user": s["gmail_user"], "pass": s["gmail_pass"]}
         st.session_state.alertadas    = {}
         st.session_state.ciclos_warmup = 0
+        st.session_state.vp_cache    = {"timestamp": None, "intraday": None, "dos_semanas": None}  # Volume Profile cache
         st.session_state.ready         = True
     return True
 
