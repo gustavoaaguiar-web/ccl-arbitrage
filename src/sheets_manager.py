@@ -192,6 +192,176 @@ class SheetsManager:
 
         return historial
 
+    def cargar_ccl_historial(self, dias: int = 1, simbolo: str = None) -> List[dict]:
+        """
+        Carga histórico de CCL desde la hoja 'CCL_Historial' para análisis de Volume Profile.
+        
+        Args:
+            dias: Cantidad de días hacia atrás (default 1 = hoy)
+            simbolo: Si se proporciona, filtra solo ese símbolo. Si None, retorna todos.
+        
+        Returns:
+            Lista de dicts:
+            [
+                {
+                    'timestamp': datetime,
+                    'ccl': 271.85,
+                    'ccl_avg': 271.87,
+                    'simbolo': 'AAPL'  (solo si simbolo != None)
+                },
+                ...
+            ]
+        """
+        from datetime import datetime, timedelta
+        import pytz
+        
+        try:
+            ws = self._hojas.get("CCL_Historial")
+            if not ws:
+                return []
+            
+            filas = ws.get_all_values()
+            if len(filas) < 2:
+                return []
+            
+            headers = filas[0]
+            simbolos = headers[2:]  # Obtener símbolos desde el header
+            
+            # Fecha límite
+            tz_ars = pytz.timezone('America/Argentina/Buenos_Aires')
+            fecha_limite = datetime.now(tz_ars) - timedelta(days=dias)
+            
+            resultado = []
+            
+            for fila in filas[1:]:
+                try:
+                    if len(fila) < 2:
+                        continue
+                    
+                    # Parsear timestamp
+                    ts_str = fila[0]
+                    if not ts_str:
+                        continue
+                    
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = tz_ars.localize(ts)
+                    
+                    # Filtrar por fecha
+                    if ts < fecha_limite:
+                        continue
+                    
+                    ccl_avg = _f(fila[1]) if len(fila) > 1 else 0
+                    
+                    # Si se solicita un símbolo específico
+                    if simbolo:
+                        if simbolo in simbolos:
+                            idx = 2 + simbolos.index(simbolo)
+                            if idx < len(fila):
+                                ccl_valor = _f(fila[idx])
+                                if ccl_valor > 0:
+                                    resultado.append({
+                                        'timestamp': ts,
+                                        'ccl': ccl_valor,
+                                        'ccl_avg': ccl_avg,
+                                        'simbolo': simbolo
+                                    })
+                    else:
+                        # Retornar CCL promedio (utilizado para Volume Profile general)
+                        if ccl_avg > 0:
+                            resultado.append({
+                                'timestamp': ts,
+                                'ccl': ccl_avg,
+                                'ccl_avg': ccl_avg
+                            })
+                
+                except (ValueError, TypeError, IndexError):
+                    continue
+            
+            # Ordenar por timestamp descendente (más recientes primero)
+            resultado.sort(key=lambda x: x['timestamp'], reverse=True)
+            return resultado
+        
+        except Exception as e:
+            logger.error(f"Error cargando CCL_Historial: {e}")
+            return []
+
+    def cargar_operaciones_en_rango(self, fecha_inicio, fecha_fin) -> List[dict]:
+        """
+        Carga operaciones cerradas en un rango de fechas (para análisis temporal).
+        
+        Args:
+            fecha_inicio: datetime
+            fecha_fin: datetime
+        
+        Returns:
+            Lista de dicts con estructura de operación completa
+        """
+        from datetime import datetime
+        import pytz
+        
+        try:
+            ws = self._hojas.get("Operaciones")
+            if not ws:
+                return []
+            
+            filas = ws.get_all_values()
+            if len(filas) < 2:
+                return []
+            
+            tz_ars = pytz.timezone('America/Argentina/Buenos_Aires')
+            resultado = []
+            
+            for fila in filas[1:]:
+                try:
+                    if len(fila) < 11:
+                        continue
+                    
+                    ts_entry_str = fila[10]  # Índice de ts_entry en el header
+                    if not ts_entry_str:
+                        continue
+                    
+                    ts_entry = datetime.fromisoformat(ts_entry_str)
+                    if ts_entry.tzinfo is None:
+                        ts_entry = tz_ars.localize(ts_entry)
+                    
+                    if not (fecha_inicio <= ts_entry <= fecha_fin):
+                        continue
+                    
+                    # Parsear PnL
+                    pnl_pct = _f(fila[9]) / 100 if len(fila) > 9 else 0
+                    
+                    ts_exit_str = fila[11] if len(fila) > 11 else None
+                    ts_exit = None
+                    if ts_exit_str:
+                        try:
+                            ts_exit = datetime.fromisoformat(ts_exit_str)
+                            if ts_exit.tzinfo is None:
+                                ts_exit = tz_ars.localize(ts_exit)
+                        except:
+                            pass
+                    
+                    registro = {
+                        'id': fila[0],
+                        'symbol': fila[1],
+                        'ts_entry': ts_entry,
+                        'ts_exit': ts_exit,
+                        'pnl_pct': pnl_pct,
+                        'pnl': _f(fila[8]) if len(fila) > 8 else 0,
+                        'motivo_cierre': fila[12] if len(fila) > 12 else '',
+                    }
+                    resultado.append(registro)
+                
+                except (ValueError, TypeError, IndexError) as e:
+                    logger.debug(f"Operación saltada: {e}")
+                    continue
+            
+            return resultado
+        
+        except Exception as e:
+            logger.error(f"Error cargando operaciones en rango: {e}")
+            return []
+
     # ─────────────── OPERACIONES ─────────────────────────
 
     def guardar_operacion(self, fila: list):
