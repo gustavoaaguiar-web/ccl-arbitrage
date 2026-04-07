@@ -141,19 +141,12 @@ def graficar_performance_temporal(operaciones_df: pd.DataFrame) -> dict:
     if operaciones_df.empty:
         return {}
 
-    if not pd.api.types.is_datetime64_any_dtype(operaciones_df['ts_entry']):
-        operaciones_df['ts_entry'] = pd.to_datetime(operaciones_df['ts_entry'])
-
-    if operaciones_df['ts_entry'].dt.tz is None:
-        operaciones_df['ts_entry'] = (
-            operaciones_df['ts_entry']
-            .dt.tz_localize('UTC')
-            .dt.tz_convert('America/Argentina/Buenos_Aires')
-        )
-    else:
-        operaciones_df['ts_entry'] = operaciones_df['ts_entry'].dt.tz_convert('America/Argentina/Buenos_Aires')
-
-    operaciones_df['hora']       = operaciones_df['ts_entry'].dt.hour
+    # Parsear siempre como UTC (así vienen de Sheets) y convertir a ART
+    ts_art = pd.to_datetime(operaciones_df['ts_entry'], utc=True).dt.tz_convert(
+        'America/Argentina/Buenos_Aires'
+    )
+    operaciones_df['ts_entry'] = ts_art
+    operaciones_df['hora']     = ts_art.dt.hour
     operaciones_df['es_ganancia'] = operaciones_df['pnl_pct'] >= 0
 
     por_hora = operaciones_df.groupby('hora').agg({
