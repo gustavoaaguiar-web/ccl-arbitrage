@@ -141,16 +141,10 @@ def graficar_performance_temporal(operaciones_df: pd.DataFrame) -> dict:
     if operaciones_df.empty:
         return {}
 
-    # Los timestamps vienen de Sheets como strings UTC naive
-    # (datetime.now() en GitHub Actions / Streamlit Cloud corre en UTC)
-    import pytz
-    UTC = pytz.utc
-    ART = pytz.timezone('America/Argentina/Buenos_Aires')
-
-    ts = pd.to_datetime(operaciones_df['ts_entry'])   # naive
-    if ts.dt.tz is None:
-        ts = ts.dt.tz_localize(UTC)
-    ts_art = ts.dt.tz_convert(ART)
+    # Timestamps guardados como UTC naive (datetime.now() en GitHub Actions = UTC)
+    # Argentina = UTC-3 fijo (sin DST) → restar 3 horas directamente
+    ts_utc = pd.to_datetime(operaciones_df['ts_entry'], errors='coerce')
+    ts_art = ts_utc - pd.Timedelta(hours=3)
 
     operaciones_df['ts_entry'] = ts_art
     operaciones_df['hora']     = ts_art.dt.hour
