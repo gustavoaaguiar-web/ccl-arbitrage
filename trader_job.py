@@ -306,7 +306,7 @@ def main():
     sh.conectar()
 
     # Cargar estado del simulador desde Sheets
-    sim = Simulador(umbral_compra=-0.50)
+    sim = Simulador(umbral_compra=-0.70)
     sh.cargar_estado_simulador(sim)
     sh.cargar_posiciones(sim)
     logger.info(f"Simulador cargado — efectivo: ${sim.efectivo:,.0f} | "
