@@ -44,18 +44,18 @@ def obtener_umbrales_config() -> dict:
     IMPORTANTE: sincronizada con src/simulator.py
     """
     return {
-        "09:50-11:30": -0.0065,     # Apertura — más exigente
-        "11:31-15:29": -0.0050,     # Mediodía — estándar
-        "15:30-16:29": -0.0065,     # Cierre — más exigente
+        "09:50-11:30": -0.0070,     # Apertura — umbral uniforme
+        "11:31-15:29": -0.0070,     # Mediodía — umbral uniforme
+        "15:30-16:29": -0.0070,     # Cierre — umbral uniforme
         "16:30+": None              # Bloqueado
     }
 
 
 def construir_dataframe_horarios(umbrales_config: dict) -> pd.DataFrame:
     datos = [
-        {"Rango": "09:50–11:30", "Nombre": "Apertura",    "Umbral": "-0.65%",   "Umbral_float": -0.0065, "Color": "🔴 Exigente"},
-        {"Rango": "11:31–15:29", "Nombre": "Mediodía",    "Umbral": "-0.50%",   "Umbral_float": -0.0050, "Color": "🟡 Estándar"},
-        {"Rango": "15:30–16:29", "Nombre": "Cierre",      "Umbral": "-0.65%",   "Umbral_float": -0.0065, "Color": "🔴 Exigente"},
+        {"Rango": "09:50–11:30", "Nombre": "Apertura",    "Umbral": "-0.70%",   "Umbral_float": -0.0070, "Color": "🟡 Uniforme"},
+        {"Rango": "11:31–15:29", "Nombre": "Mediodía",    "Umbral": "-0.70%",   "Umbral_float": -0.0070, "Color": "🟡 Uniforme"},
+        {"Rango": "15:30–16:29", "Nombre": "Cierre",      "Umbral": "-0.70%",   "Umbral_float": -0.0070, "Color": "🟡 Uniforme"},
         {"Rango": "16:30–16:50", "Nombre": "Post-cierre", "Umbral": "BLOQUEADO","Umbral_float": None,    "Color": "🔴 No compra"},
     ]
     return pd.DataFrame(datos)
@@ -65,11 +65,11 @@ def obtener_rango_horario_actual(ahora: datetime) -> tuple:
     hora_min = ahora.hour * 60 + ahora.minute
 
     if 9*60+50 <= hora_min <= 11*60+30:
-        return ("Apertura", -0.0065, True)
+        return ("Apertura", -0.0070, True)
     elif 11*60+31 <= hora_min <= 15*60+29:
-        return ("Mediodía", -0.0050, True)
+        return ("Mediodía", -0.0070, True)
     elif 15*60+30 <= hora_min <= 16*60+29:
-        return ("Cierre", -0.0065, True)
+        return ("Cierre", -0.0070, True)
     elif 16*60+30 <= hora_min <= 16*60+50:
         return ("Post-cierre", None, False)
     else:
@@ -78,12 +78,12 @@ def obtener_rango_horario_actual(ahora: datetime) -> tuple:
 
 def graficar_curva_umbrales() -> go.Figure:
     horas_puntos = [
-        (9.833,  -0.0065),
-        (11.5,   -0.0065),
-        (11.517, -0.0050),
-        (15.483, -0.0050),
-        (15.5,   -0.0065),
-        (16.483, -0.0065),
+        (9.833,  -0.0070),
+        (11.5,   -0.0070),
+        (11.517, -0.0070),
+        (15.483, -0.0070),
+        (15.5,   -0.0070),
+        (16.483, -0.0070),
         (16.5,   None),
     ]
 
@@ -214,7 +214,7 @@ def graficar_performance_temporal(operaciones_df: pd.DataFrame) -> dict:
 
 def main():
     st.set_page_config(page_title="⏰ Temporal Strategy", layout="wide")
-    st.title("⏰ Temporal Strategy — Umbrales Dinámicos")
+    st.title("⏰ Temporal Strategy — Umbral Uniforme -0.70%")
 
     try:
         sheets = get_sheets()
@@ -330,9 +330,9 @@ def main():
 
     with st.expander("¿Por qué umbrales dinámicos?"):
         st.markdown("""
-        - **Apertura (09:50–11:30):** Spreads más anchos, volatilidad de "matching". Umbral -0.65% (más exigente)
-        - **Mediodía (11:31–15:29):** Mercado estabilizado. Umbral -0.50% (estándar)
-        - **Cierre (15:30–16:29):** De nuevo spreads y volatilidad. Umbral -0.65% (más exigente)
+        - **Apertura (09:50–11:30):** Umbral uniforme -0.70%
+        - **Mediodía (11:31–15:29):** Umbral uniforme -0.70%
+        - **Cierre (15:30–16:29):** Umbral uniforme -0.70%
         - **Post-cierre (16:30–16:50):** Cierre forzado. NO se abren nuevas posiciones
         """)
 
