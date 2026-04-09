@@ -9,9 +9,9 @@ Simulador de Arbitraje CCL
 - Cierre forzado: 16:50 hs
 
 CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
-  [C] PnL precio ≤ -0.80%                              → stop loss duro
-  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +1.00%    → spread revertido con ganancia
-  [B] pnl_max ≥ +0.50%  AND  caída desde pico ≥ 0.25% → trailing con ganancia confirmada
+  [C] PnL precio ≤ -1.30%                              → stop loss duro
+  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +0.80%    → spread revertido con ganancia
+  [B] pnl_max ≥ +0.60%  AND  caída desde pico ≥ 0.20% → trailing con ganancia confirmada
   [D] PnL precio ≥ +1.60%                              → take profit puro
 
 MODELO DE CLIMA (Simons):
@@ -47,15 +47,15 @@ CAPITAL_INICIAL            = 10_000_000.0
 PCT_POR_OPERACION          = 0.15
 MAX_POSICIONES_POR_ESPECIE = 2
 
-UMBRAL_COMPRA_DEFAULT = -0.50   # desvío CCL mínimo para comprar (%, negativo)
+UMBRAL_COMPRA_DEFAULT = -0.70   # desvío CCL mínimo para comprar (%, negativo)
 
 # ─── PARÁMETROS DE SALIDA ────────────────────────────────
 UMBRAL_VENTA_A         = 0.00   # desvío CCL — [A] reversión spread (%)
-UMBRAL_VENTA_A_PNL     = 1.00   # PnL precio mínimo para Salida A (%)
-UMBRAL_VENTA_B_PNL_MIN = 0.50   # PnL % mínimo alcanzado para habilitar trailing B (%)
-UMBRAL_VENTA_B_CAIDA   = 0.25   # caída desde pico PnL% para disparar trailing B (%)
+UMBRAL_VENTA_A_PNL     = 0.80   # PnL precio mínimo para Salida A (%)
+UMBRAL_VENTA_B_PNL_MIN = 0.60   # PnL % mínimo alcanzado para habilitar trailing B (%)
+UMBRAL_VENTA_B_CAIDA   = 0.20   # caída desde pico PnL% para disparar trailing B (%)
 TAKE_PROFIT_D          = 1.60   # PnL precio — [D] take profit puro (%)
-STOP_LOSS_C            = -0.80  # PnL precio — [C] stop loss duro (%)
+STOP_LOSS_C            = -1.30  # PnL precio — [C] stop loss duro (%)
 
 # ─── TIMEZONE ────────────────────────────────────────────
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -231,9 +231,9 @@ class Simulador:
         Evalúa si una posición debe cerrarse. Retorna el motivo o None.
 
         Orden de prioridad:
-          1. [C] Stop loss duro         → pnl_pct ≤ -0.80%
-          2. [A] Reversión del spread   → dev ≥ 0.00% AND pnl_pct ≥ +1.00%
-          3. [B] Trailing confirmado    → pnl_max ≥ +0.50% AND caída desde pico ≥ 0.25%
+          1. [C] Stop loss duro         → pnl_pct ≤ -1.30%
+          2. [A] Reversión del spread   → dev ≥ 0.00% AND pnl_pct ≥ +0.80%
+          3. [B] Trailing confirmado    → pnl_max ≥ +0.60% AND caída desde pico ≥ 0.20%
           4. [D] Take profit puro       → pnl_pct ≥ +1.60%
         """
         pnl_pct = pos.pnl_pct
