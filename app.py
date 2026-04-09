@@ -124,9 +124,9 @@ def init_state():
         
         # Umbrales dinámicos por franja horaria
         umbrales_por_hora = {
-            "09:50-11:30": -0.0065,     # Apertura — más exigente
-            "11:31-15:29": -0.0050,     # Mediodía — estándar
-            "15:30-16:29": -0.0065,     # Cierre — más exigente
+            "09:50-11:30": -0.0070,     # Apertura — exigente
+            "11:31-15:29": -0.0070,     # Mediodía — exigente
+            "15:30-16:29": -0.0070,     # Cierre — exigente
             "16:30+": None              # Bloqueado
         }
         
@@ -398,14 +398,14 @@ def main():
         clima = clima_hmm(sym, historial)
         climas[sym] = "🟢 BULL" if clima == "🟢" else "🔴 BEAR"
 
-        if dev <= -0.5:
+        if dev <= -0.70:
             desvio_color = "🟢"
         elif dev >= 0.1:
             desvio_color = "🔴"
         else:
             desvio_color = "🟡"
 
-        if dev <= -0.5 and clima == "🟢":
+        if dev < -0.70 and clima == "🟢":
             accion = "🚀 COMPRA"
         elif dev >= 0.1:
             accion = "🔴 VENTA"
@@ -511,7 +511,7 @@ def main():
         textposition="outside",
     ))
     fig.add_hline(y=0.15, line_dash="dash", line_color="#FF4444", annotation_text="+0.15%")
-    fig.add_hline(y=-0.5, line_dash="dash", line_color="#00C851", annotation_text="-0.50%")
+    fig.add_hline(y=-0.70, line_dash="dash", line_color="#00C851", annotation_text="-0.70%")
     fig.update_layout(
         title="Desviación CCL vs Promedio",
         plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
