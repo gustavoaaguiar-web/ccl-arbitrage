@@ -211,7 +211,8 @@ def alerta_operacion(gmail_user, gmail_pass, ops_abiertas, ops_cerradas, ccl_avg
 
 # ── CICLO PRINCIPAL ───────────────────────────────────────
 def ejecutar_ciclo(iol, alpaca, sim, sheets, barras_cache,
-                   historial, gmail_user, gmail_pass, n_ciclo):
+                   historial, gmail_user, gmail_pass, n_ciclo,
+                   ops_guardadas: set):
     hora  = hora_argentina()
     ahora = hora.time()
 
@@ -270,8 +271,13 @@ def ejecutar_ciclo(iol, alpaca, sim, sheets, barras_cache,
     hay_cambios  = bool(ops_abiertas or ops_cerradas)
 
     for op in ops_cerradas:
-        sheets.guardar_operacion(sim.fila_sheets_operacion(op))
-        logger.info(f"  VENTA {op.symbol} [{op.motivo_cierre}] PnL={op.pnl_pct:+.2f}%")
+        clave = (op.id, op.ts_entry)
+        if clave not in ops_guardadas:
+            sheets.guardar_operacion(sim.fila_sheets_operacion(op))
+            ops_guardadas.add(clave)
+            logger.info(f"  VENTA {op.symbol} [{op.motivo_cierre}] PnL={op.pnl_pct:+.2f}%")
+        else:
+            logger.warning(f"  Operación duplicada ignorada: {op.id} {op.symbol}")
 
     for pos in ops_abiertas:
         logger.info(f"  COMPRA {pos.symbol} @ ${pos.precio_entry:,.1f} dev={pos.dev_entry:+.2f}%")
@@ -313,6 +319,12 @@ def main():
                 f"posiciones: {sum(len(v) for v in sim.posiciones.values())} | "
                 f"umbral_compra: {sim.umbral_compra:+.2f}%")
 
+    # Guard anti-duplicados en Operaciones (idéntico al de app.py)
+    # Semilla con ops ya persistidas para que runs solapados no las reescriban.
+    ops_existentes = sh.cargar_operaciones()
+    ops_guardadas: set = {(fila[0], fila[10]) for fila in ops_existentes if len(fila) > 10}
+    logger.info(f"ops_guardadas inicializado con {len(ops_guardadas)} operaciones previas")
+
     historial = sh.cargar_historial_ccl()
     logger.info(f"Historial CCL: {len(historial)} snapshots")
 
@@ -325,7 +337,8 @@ def main():
 
         ejecutar_ciclo(
             iol, alpaca, sim, sh, barras_cache,
-            historial, s["gmail_user"], s["gmail_pass"], n
+            historial, s["gmail_user"], s["gmail_pass"], n,
+            ops_guardadas,
         )
 
         if n < args.ciclos:
