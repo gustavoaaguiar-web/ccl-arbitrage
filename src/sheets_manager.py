@@ -414,10 +414,16 @@ class SheetsManager:
         if len(filas) < 2:
             return
         simulador.posiciones = {}
+        ids_vistos = set()  # guard anti-duplicados por solapamiento de runs GHA
         for fila in filas[1:]:
             try:
+                pos_id = fila[0]
+                if pos_id in ids_vistos:
+                    logger.warning(f"Posición duplicada ignorada al cargar: {pos_id}")
+                    continue
+                ids_vistos.add(pos_id)
                 pos = Posicion(
-                    id=fila[0],
+                    id=pos_id,
                     symbol=fila[1],
                     cantidad=_f(fila[2]),
                     precio_entry=_f(fila[3]),
