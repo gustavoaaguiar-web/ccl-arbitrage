@@ -1,0 +1,80 @@
+name: GG Trader Watchdog
+
+# Verifica cada 10 minutos si el trader corriÃ³ recientemente.
+# Si no corriÃ³ en los Ãºltimos 12 min (y estamos en horario de mercado),
+# lo re-dispara automÃ¡ticamente.
+
+on:
+  schedule:
+    # Cada 10 minutos entre 13:20 y 20:00 UTC (10:20â€“17:00 ART), L-V
+    - cron: '20,30,40,50 13 * * 1-5'
+    - cron: '0,10,20,30,40,50 14,15,16,17,18,19 * * 1-5'
+    - cron: '0 20 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Verificar actividad del trader y re-disparar si inactivo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const TRADER_WORKFLOW = 'trader.yml';
+            const STALE_MINUTES   = 12;    // tolerancia: 5 min ciclo + 7 min buffer
+            const MARKET_START_H  = 13;    // UTC = 10:00 ART
+            const MARKET_END_H    = 20;    // UTC = 17:00 ART
+
+            const now     = new Date();
+            const hourUTC = now.getUTCHours();
+
+            if (hourUTC < MARKET_START_H || hourUTC >= MARKET_END_H) {
+              console.log(`Fuera de horario (${hourUTC}:xx UTC). Sin acciÃ³n.`);
+              return;
+            }
+
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner:       context.repo.owner,
+              repo:        context.repo.repo,
+              workflow_id: TRADER_WORKFLOW,
+              per_page:    1,
+            });
+
+            if (data.workflow_runs.length > 0) {
+              const last    = data.workflow_runs[0];
+              const diffMin = (now - new Date(last.created_at)) / 60_000;
+              const status  = last.status;
+
+              console.log(`Ãšltimo run: #${last.run_number} | Estado: ${status} | Hace: ${diffMin.toFixed(1)} min`);
+
+              if (status === 'in_progress' || status === 'queued') {
+                console.log('Trader activo. Sin acciÃ³n.');
+                return;
+              }
+
+              if (diffMin < STALE_MINUTES) {
+                console.log(`CorriÃ³ hace ${diffMin.toFixed(1)} min. Sin acciÃ³n.`);
+                return;
+              }
+
+              console.log(`âš ï¸ Inactivo ${diffMin.toFixed(1)} min. Re-disparando...`);
+            } else {
+              console.log('Sin runs previos. Disparando...');
+            }
+
+            // Dispara el trader con ciclos=5 (igual que el cron normal)
+            await github.rest.actions.createWorkflowDispatch({
+              owner:       context.repo.owner,
+              repo:        context.repo.repo,
+              workflow_id: TRADER_WORKFLOW,
+              ref:         'main',
+              inputs:      { ciclos: '5' },
+            });
+
+            console.log('âœ… Trader re-disparado por watchdog.');
