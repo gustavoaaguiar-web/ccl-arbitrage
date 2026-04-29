@@ -35,7 +35,7 @@ jobs:
             const hourUTC = now.getUTCHours();
 
             if (hourUTC < MARKET_START_H || hourUTC >= MARKET_END_H) {
-              console.log(`Fuera de horario (${hourUTC}:xx UTC). Sin acciÃ³n.`);
+              console.log(`Fuera de horario (${hourUTC}:xx UTC). Sin accion.`);
               return;
             }
 
@@ -51,19 +51,19 @@ jobs:
               const diffMin = (now - new Date(last.created_at)) / 60_000;
               const status  = last.status;
 
-              console.log(`Ãšltimo run: #${last.run_number} | Estado: ${status} | Hace: ${diffMin.toFixed(1)} min`);
+              console.log(`Ultimo run: #${last.run_number} | Estado: ${status} | Hace: ${diffMin.toFixed(1)} min`);
 
               if (status === 'in_progress' || status === 'queued') {
-                console.log('Trader activo. Sin acciÃ³n.');
+                console.log('Trader activo. Sin accion.');
                 return;
               }
 
               if (diffMin < STALE_MINUTES) {
-                console.log(`CorriÃ³ hace ${diffMin.toFixed(1)} min. Sin acciÃ³n.`);
+                console.log(`Corrio hace ${diffMin.toFixed(1)} min. Sin accion.`);
                 return;
               }
 
-              console.log(`âš ï¸ Inactivo ${diffMin.toFixed(1)} min. Re-disparando...`);
+              console.log(`ALERTA: Inactivo ${diffMin.toFixed(1)} min. Re-disparando...`);
             } else {
               console.log('Sin runs previos. Disparando...');
             }
@@ -77,4 +77,4 @@ jobs:
               inputs:      { ciclos: '5' },
             });
 
-            console.log('âœ… Trader re-disparado por watchdog.');
+            console.log('OK: Trader re-disparado por watchdog.');
