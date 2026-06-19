@@ -1,13 +1,18 @@
 """
-Google Sheets Manager
-=====================
+Google Sheets Manager — Sistema GG Swing
+==========================================
 Hojas:
-- CCL_Historial       → snapshots CCL para HMM
-- HMM_Historial       → precios USD por snapshot (rolling 500) para HMM Simons
-- Operaciones         → registro de cada trade cerrado
-- Estado_Cartera      → snapshots del capital total
-- Posiciones_Abiertas → posiciones abiertas (persiste entre reinicios)
-- Simulador_Estado    → efectivo y contador (persiste entre reinicios)
+- Historico_Merval_Raw → snapshots crudos de Merval (acumulación continua,
+                          base para resamplear a velas 30min/4H)
+- Operaciones          → registro de cada trade cerrado
+- Estado_Cartera       → snapshots del capital total
+- Posiciones_Abiertas  → posiciones abiertas (persiste entre reinicios)
+- Simulador_Estado     → efectivo y contador (persiste entre reinicios)
+
+NOTA DE TRANSICIÓN (jun-2026):
+Las hojas CCL_Historial y HMM_Historial del sistema de arbitraje anterior
+fueron eliminadas de este archivo. El sistema pivotó a swing trading
+técnico (Sistema GG Swing) tras la compresión estructural de spreads CCL.
 """
 
 import logging
@@ -22,17 +27,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-SHEET_NAME = "CCL-Arbitrage-Historial"
-
-# Máximo de snapshots USD a retener en HMM_Historial (rolling window).
-# A 60s/ciclo → 500 snapshots ≈ 1.5 días de trading.
-HMM_MAX_SNAPSHOTS = 500
+SHEET_NAME = "CCL-Arbitrage-Historial"  # nombre del spreadsheet en Drive — sin cambios
 
 HEADERS = {
-    "CCL_Historial": ["timestamp", "ccl_avg", "GGAL", "YPFD", "PAMP", "CEPU",
-                      "AMZN", "MSFT", "NVDA", "TSLA", "AAPL", "META", "GOOGL",
-                      "MELI", "BMA", "GLD", "IBIT", "SPY", "TGSU2"],
-    "HMM_Historial": ["ts", "sym_usd", "precio"],
+    "Historico_Merval_Raw": ["ts", "symbol", "precio", "apertura",
+                              "maximo", "minimo", "volumen_nominal",
+                              "cantidad_operaciones"],
     "Operaciones":   ["id", "symbol", "tipo", "cantidad", "precio_entry",
                       "precio_exit", "monto_entry", "monto_exit", "pnl",
                       "pnl_pct", "ts_entry", "ts_exit", "motivo_cierre"],
@@ -88,279 +88,77 @@ class SheetsManager:
         except:
             pass
 
-    # ─────────────── CCL HISTORIAL ───────────────────────
+    # ─────────────── HISTÓRICO MERVAL (Sistema GG Swing) ─────
 
-    def guardar_snapshot_ccl(self, ccl_map: dict, ccl_avg: float,
-                              p_usd: dict = None, ts: str = None):
+    def guardar_tick_merval(self, snapshots: list):
         """
-        Guarda snapshot CCL en CCL_Historial.
-        Si se pasa p_usd, también persiste los precios USD en HMM_Historial
-        para que el HMM Simons sobreviva reinicios de la app.
-        Mantiene un rolling window de HMM_MAX_SNAPSHOTS en HMM_Historial.
+        Guarda snapshots crudos de Merval para construir velas 30min/4H
+        más adelante. Cada snapshot es un dict con:
+        {symbol, precio, apertura, maximo, minimo, volumen_nominal,
+         cantidad_operaciones}
+
+        Se escribe 1 fila por símbolo por ciclo (cada ~60s dentro de
+        cada ejecución GHA). No hace rolling window — esta hoja se
+        acumula indefinidamente para servir de base histórica del
+        Sistema GG Swing.
         """
         from datetime import datetime
-        ts = ts or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws = self._hojas.get("Historico_Merval_Raw")
+        if not ws or not snapshots:
+            return
 
-        # — CCL_Historial (sin cambios) —
-        ws_ccl = self._hojas.get("CCL_Historial")
-        if ws_ccl:
-            simbolos = HEADERS["CCL_Historial"][2:]
-            fila = [ts, round(ccl_avg, 2)]
-            fila += [round(ccl_map.get(sym, 0), 2) for sym in simbolos]
-            ws_ccl.append_row(fila)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        filas = []
+        for s in snapshots:
+            filas.append([
+                ts,
+                s.get("symbol", ""),
+                round(s.get("precio", 0), 2),
+                round(s.get("apertura", 0), 2),
+                round(s.get("maximo", 0), 2),
+                round(s.get("minimo", 0), 2),
+                round(s.get("volumen_nominal", 0), 2),
+                s.get("cantidad_operaciones", 0),
+            ])
+        if filas:
+            ws.append_rows(filas)
 
-        # — HMM_Historial (nuevo) —
-        if p_usd:
-            ws_hmm = self._hojas.get("HMM_Historial")
-            if not ws_hmm:
-                return
-
-            # Escribir una fila por símbolo USD
-            filas_nuevas = [[ts, sym, round(precio, 6)]
-                            for sym, precio in p_usd.items() if precio]
-            if filas_nuevas:
-                ws_hmm.append_rows(filas_nuevas)
-
-            # Rolling window: eliminar filas antiguas si se supera el límite.
-            # Contamos snapshots únicos por timestamp para calcular el corte.
-            todas = ws_hmm.get_all_values()  # incluye header
-            n_syms = len(p_usd)
-            max_filas_datos = HMM_MAX_SNAPSHOTS * n_syms
-            filas_datos = len(todas) - 1  # sin header
-
-            if filas_datos > max_filas_datos:
-                exceso = filas_datos - max_filas_datos
-                # delete_rows(start, end) — filas 2..exceso+1 (1-indexed, saltando header)
-                ws_hmm.delete_rows(2, exceso + 1)
-                logger.info(f"🗑️ HMM_Historial: eliminadas {exceso} filas antiguas")
-
-    def cargar_historial_ccl(self) -> list:
+    def cargar_historico_merval_raw(self, symbol: str = None) -> List[dict]:
         """
-        Carga el historial para el HMM Simons.
-        Combina CCL_Historial (ccl/avg) con HMM_Historial (p_usd).
-        Retorna lista de dicts con claves: ts, ccl, avg, usd.
+        Carga el histórico crudo de Merval. Si se pasa symbol, filtra
+        solo ese símbolo. Retorna lista ordenada por ts ascendente,
+        lista para resamplear a velas 30min/4H.
         """
-        # — Cargar precios USD desde HMM_Historial —
-        usd_por_ts: dict = {}
-        ws_hmm = self._hojas.get("HMM_Historial")
-        if ws_hmm:
-            filas_hmm = ws_hmm.get_all_values()
-            for fila in filas_hmm[1:]:  # skip header
-                try:
-                    ts_h, sym, precio = fila[0], fila[1], _f(fila[2])
-                    if precio > 0:
-                        usd_por_ts.setdefault(ts_h, {})[sym] = precio
-                except:
-                    continue
+        ws = self._hojas.get("Historico_Merval_Raw")
+        if not ws:
+            return []
 
-        # — Cargar CCL desde CCL_Historial —
-        ws_ccl = self._hojas.get("CCL_Historial")
-        if not ws_ccl:
-            # Si no hay CCL pero sí hay USD, devolver solo con usd
-            return [{"ts": ts, "ccl": {}, "avg": 0, "usd": precios}
-                    for ts, precios in sorted(usd_por_ts.items())]
+        filas = ws.get_all_values()
+        if len(filas) < 2:
+            return []
 
-        filas_ccl = ws_ccl.get_all_values()
-        if len(filas_ccl) < 2:
-            return [{"ts": ts, "ccl": {}, "avg": 0, "usd": precios}
-                    for ts, precios in sorted(usd_por_ts.items())]
-
-        headers  = filas_ccl[0]
-        simbolos = headers[2:]
-        historial = []
-
-        for fila in filas_ccl[1:]:
+        resultado = []
+        for fila in filas[1:]:
             try:
-                ts  = fila[0]
-                avg = _f(fila[1])
-                ccl_dic = {}
-                for i, sym in enumerate(simbolos):
-                    idx = i + 2
-                    if idx < len(fila) and fila[idx]:
-                        val = _f(fila[idx])
-                        if val > 0:
-                            ccl_dic[sym] = val
-                if ccl_dic:
-                    historial.append({
-                        "ts":  ts,
-                        "ccl": ccl_dic,
-                        "avg": avg,
-                        "usd": usd_por_ts.get(ts, {}),  # adjuntar USD si existe
-                    })
-            except:
+                if len(fila) < 8:
+                    continue
+                if symbol and fila[1] != symbol:
+                    continue
+                resultado.append({
+                    "ts":                    fila[0],
+                    "symbol":                fila[1],
+                    "precio":                _f(fila[2]),
+                    "apertura":              _f(fila[3]),
+                    "maximo":                _f(fila[4]),
+                    "minimo":                _f(fila[5]),
+                    "volumen_nominal":       _f(fila[6]),
+                    "cantidad_operaciones":  int(_f(fila[7])) if fila[7] else 0,
+                })
+            except (ValueError, TypeError, IndexError):
                 continue
 
-        return historial
-
-    def cargar_ccl_historial(self, dias: int = 1, simbolo: str = None) -> List[dict]:
-        """
-        Carga histórico de CCL desde la hoja 'CCL_Historial' para análisis de Volume Profile.
-        
-        Args:
-            dias: Cantidad de días hacia atrás (default 1 = hoy)
-            simbolo: Si se proporciona, filtra solo ese símbolo. Si None, retorna todos.
-        
-        Returns:
-            Lista de dicts:
-            [
-                {
-                    'timestamp': datetime,
-                    'ccl': 271.85,
-                    'ccl_avg': 271.87,
-                    'simbolo': 'AAPL'  (solo si simbolo != None)
-                },
-                ...
-            ]
-        """
-        from datetime import datetime, timedelta
-        import pytz
-        
-        try:
-            ws = self._hojas.get("CCL_Historial")
-            if not ws:
-                return []
-            
-            filas = ws.get_all_values()
-            if len(filas) < 2:
-                return []
-            
-            headers = filas[0]
-            simbolos = headers[2:]  # Obtener símbolos desde el header
-            
-            # Fecha límite
-            tz_ars = pytz.timezone('America/Argentina/Buenos_Aires')
-            fecha_limite = datetime.now(tz_ars) - timedelta(days=dias)
-            
-            resultado = []
-            
-            for fila in filas[1:]:
-                try:
-                    if len(fila) < 2:
-                        continue
-                    
-                    # Parsear timestamp
-                    ts_str = fila[0]
-                    if not ts_str:
-                        continue
-                    
-                    ts = datetime.fromisoformat(ts_str)
-                    if ts.tzinfo is None:
-                        ts = tz_ars.localize(ts)
-                    
-                    # Filtrar por fecha
-                    if ts < fecha_limite:
-                        continue
-                    
-                    ccl_avg = _f(fila[1]) if len(fila) > 1 else 0
-                    
-                    # Si se solicita un símbolo específico
-                    if simbolo:
-                        if simbolo in simbolos:
-                            idx = 2 + simbolos.index(simbolo)
-                            if idx < len(fila):
-                                ccl_valor = _f(fila[idx])
-                                if ccl_valor > 0:
-                                    resultado.append({
-                                        'timestamp': ts,
-                                        'ccl': ccl_valor,
-                                        'ccl_avg': ccl_avg,
-                                        'simbolo': simbolo
-                                    })
-                    else:
-                        # Retornar CCL promedio (utilizado para Volume Profile general)
-                        if ccl_avg > 0:
-                            resultado.append({
-                                'timestamp': ts,
-                                'ccl': ccl_avg,
-                                'ccl_avg': ccl_avg
-                            })
-                
-                except (ValueError, TypeError, IndexError):
-                    continue
-            
-            # Ordenar por timestamp descendente (más recientes primero)
-            resultado.sort(key=lambda x: x['timestamp'], reverse=True)
-            return resultado
-        
-        except Exception as e:
-            logger.error(f"Error cargando CCL_Historial: {e}")
-            return []
-
-    def cargar_operaciones_en_rango(self, fecha_inicio, fecha_fin) -> List[dict]:
-        """
-        Carga operaciones cerradas en un rango de fechas (para análisis temporal).
-        
-        Args:
-            fecha_inicio: datetime
-            fecha_fin: datetime
-        
-        Returns:
-            Lista de dicts con estructura de operación completa
-        """
-        from datetime import datetime
-        import pytz
-        
-        try:
-            ws = self._hojas.get("Operaciones")
-            if not ws:
-                return []
-            
-            filas = ws.get_all_values()
-            if len(filas) < 2:
-                return []
-            
-            tz_ars = pytz.timezone('America/Argentina/Buenos_Aires')
-            resultado = []
-            
-            for fila in filas[1:]:
-                try:
-                    if len(fila) < 11:
-                        continue
-                    
-                    ts_entry_str = fila[10]  # Índice de ts_entry en el header
-                    if not ts_entry_str:
-                        continue
-                    
-                    ts_entry = datetime.fromisoformat(ts_entry_str)
-                    if ts_entry.tzinfo is None:
-                        ts_entry = tz_ars.localize(ts_entry)
-                    
-                    if not (fecha_inicio <= ts_entry <= fecha_fin):
-                        continue
-                    
-                    # Parsear PnL
-                    pnl_pct = _f(fila[9]) / 100 if len(fila) > 9 else 0
-                    
-                    ts_exit_str = fila[11] if len(fila) > 11 else None
-                    ts_exit = None
-                    if ts_exit_str:
-                        try:
-                            ts_exit = datetime.fromisoformat(ts_exit_str)
-                            if ts_exit.tzinfo is None:
-                                ts_exit = tz_ars.localize(ts_exit)
-                        except:
-                            pass
-                    
-                    registro = {
-                        'id': fila[0],
-                        'symbol': fila[1],
-                        'ts_entry': ts_entry,
-                        'ts_exit': ts_exit,
-                        'pnl_pct': pnl_pct,
-                        'pnl': _f(fila[8]) if len(fila) > 8 else 0,
-                        'motivo_cierre': fila[12] if len(fila) > 12 else '',
-                    }
-                    resultado.append(registro)
-                
-                except (ValueError, TypeError, IndexError) as e:
-                    logger.debug(f"Operación saltada: {e}")
-                    continue
-            
-            return resultado
-        
-        except Exception as e:
-            logger.error(f"Error cargando operaciones en rango: {e}")
-            return []
+        resultado.sort(key=lambda x: x["ts"])
+        return resultado
 
     # ─────────────── OPERACIONES ─────────────────────────
 
