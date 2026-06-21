@@ -4,7 +4,7 @@ Google Sheets Manager — Sistema GG Swing
 Hojas:
 - Historico_Merval_Raw → snapshots crudos de Merval (acumulación continua,
                           base para resamplear a velas 30min/4H)
-- Operaciones          → registro de cada trade cerrado
+- Operaciones          → registro de cada cierre (parcial o final) de trade
 - Estado_Cartera       → snapshots del capital total
 - Posiciones_Abiertas  → posiciones abiertas (persiste entre reinicios)
 - Simulador_Estado     → efectivo y contador (persiste entre reinicios)
@@ -13,6 +13,13 @@ NOTA DE TRANSICIÓN (jun-2026):
 Las hojas CCL_Historial y HMM_Historial del sistema de arbitraje anterior
 fueron eliminadas de este archivo. El sistema pivotó a swing trading
 técnico (Sistema GG Swing) tras la compresión estructural de spreads CCL.
+
+NOTA DE TRANSICIÓN #2 (jun-2026):
+Posiciones_Abiertas se actualizó: los campos ccl_entry/dev_entry del
+arbitraje CCL fueron reemplazados por score/precio_stop/precio_t1/
+precio_t2/precio_t3/riesgo_pct + el estado de salida escalonada
+(t1_alcanzado, t2_alcanzado, stop_en_breakeven, cantidad_restante,
+cantidad_inicial), acorde a la nueva clase Posicion de simulator.py.
 """
 
 import logging
@@ -39,8 +46,12 @@ HEADERS = {
     "Estado_Cartera": ["timestamp", "capital_total", "efectivo", "en_posiciones",
                        "pnl_total", "pnl_pct", "operaciones_total", "win_rate",
                        "posiciones_abiertas"],
-    "Posiciones_Abiertas": ["id", "symbol", "cantidad", "precio_entry",
-                             "monto_entry", "ts_entry", "ccl_entry", "dev_entry"],
+    "Posiciones_Abiertas": ["id", "symbol", "score", "cantidad_inicial",
+                             "cantidad_restante", "precio_entry", "monto_entry",
+                             "precio_stop", "precio_t1", "precio_t2", "precio_t3",
+                             "riesgo_pct", "ts_entry", "t1_alcanzado", "t2_alcanzado",
+                             "stop_en_breakeven", "cantidad_cerrada_t1",
+                             "cantidad_cerrada_t2"],
     "Simulador_Estado": ["efectivo", "op_counter"],
 }
 
@@ -51,6 +62,11 @@ def _f(s):
         return float(str(s).replace(",", ".").strip())
     except:
         return 0.0
+
+
+def _b(s):
+    """Convierte string de Sheets ('TRUE'/'FALSE'/'1'/'0') a bool."""
+    return str(s).strip().upper() in ("TRUE", "1", "VERDADERO")
 
 
 class SheetsManager:
@@ -80,6 +96,18 @@ class SheetsManager:
                 logger.info(f"📋 Hoja creada: {nombre}")
             else:
                 ws = self.sh.worksheet(nombre)
+                # Si la hoja ya existía con headers viejos (ccl_entry/dev_entry),
+                # se re-escribe la fila 1 con los headers nuevos. Esto NO borra
+                # filas de datos existentes — si la hoja tenía posiciones viejas
+                # del sistema CCL, conviene vaciarla a mano antes del primer run.
+                fila1_actual = ws.row_values(1)
+                if fila1_actual != headers:
+                    ws.update('A1', [headers])
+                    logger.warning(
+                        f"⚠️ Headers de '{nombre}' actualizados a la versión Swing. "
+                        f"Si había filas de datos del sistema CCL anterior, revisar "
+                        f"manualmente — pueden no corresponder a las columnas nuevas."
+                    )
             self._hojas[nombre] = ws
         try:
             sheet1 = self.sh.worksheet("Sheet1")
@@ -184,26 +212,38 @@ class SheetsManager:
     # ─────────────── POSICIONES ABIERTAS ─────────────────
 
     def guardar_posiciones(self, simulador):
-        """Sobreescribe la hoja con las posiciones abiertas actuales."""
+        """Sobreescribe la hoja con las posiciones abiertas actuales (Sistema GG Swing)."""
         ws = self._hojas.get("Posiciones_Abiertas")
         if not ws:
             return
         ws.clear()
         ws.append_row(HEADERS["Posiciones_Abiertas"])
-        for sym, poss in simulador.posiciones.items():
-            for pos in poss:
-                ws.append_row([
-                    pos.id, sym,
-                    round(pos.cantidad, 6),
-                    round(pos.precio_entry, 4),
-                    round(pos.monto_entry, 2),
-                    pos.ts_entry,
-                    round(pos.ccl_entry, 4),
-                    round(pos.dev_entry, 4),
-                ])
+        filas = []
+        for sym, pos in simulador.posiciones.items():
+            filas.append([
+                pos.id, sym,
+                round(pos.score, 2),
+                round(pos.cantidad_inicial, 6),
+                round(pos.cantidad_restante, 6),
+                round(pos.precio_entry, 4),
+                round(pos.monto_entry, 2),
+                round(pos.precio_stop, 4),
+                round(pos.precio_t1, 4),
+                round(pos.precio_t2, 4),
+                round(pos.precio_t3, 4),
+                round(pos.riesgo_pct, 6),
+                pos.ts_entry,
+                pos.t1_alcanzado,
+                pos.t2_alcanzado,
+                pos.stop_en_breakeven,
+                round(pos.cantidad_cerrada_t1, 6),
+                round(pos.cantidad_cerrada_t2, 6),
+            ])
+        if filas:
+            ws.append_rows(filas)
 
     def cargar_posiciones(self, simulador):
-        """Carga posiciones abiertas desde Sheets al simulador."""
+        """Carga posiciones abiertas desde Sheets al simulador (Sistema GG Swing)."""
         from simulator import Posicion
         ws = self._hojas.get("Posiciones_Abiertas")
         if not ws:
@@ -215,29 +255,40 @@ class SheetsManager:
         ids_vistos = set()  # guard anti-duplicados por solapamiento de runs GHA
         for fila in filas[1:]:
             try:
+                if len(fila) < 18:
+                    logger.warning(f"Fila de Posiciones_Abiertas con columnas insuficientes, saltada: {fila}")
+                    continue
                 pos_id = fila[0]
                 if pos_id in ids_vistos:
                     logger.warning(f"Posición duplicada ignorada al cargar: {pos_id}")
                     continue
                 ids_vistos.add(pos_id)
+                symbol = fila[1]
                 pos = Posicion(
                     id=pos_id,
-                    symbol=fila[1],
-                    cantidad=_f(fila[2]),
-                    precio_entry=_f(fila[3]),
-                    monto_entry=_f(fila[4]),
-                    ts_entry=fila[5],
-                    ccl_entry=_f(fila[6]),
-                    dev_entry=_f(fila[7]),
-                    precio_actual=_f(fila[3]),
+                    symbol=symbol,
+                    score=_f(fila[2]),
+                    cantidad_inicial=_f(fila[3]),
+                    cantidad_restante=_f(fila[4]),
+                    precio_entry=_f(fila[5]),
+                    monto_entry=_f(fila[6]),
+                    precio_stop=_f(fila[7]),
+                    precio_t1=_f(fila[8]),
+                    precio_t2=_f(fila[9]),
+                    precio_t3=_f(fila[10]),
+                    riesgo_pct=_f(fila[11]),
+                    ts_entry=fila[12],
+                    precio_actual=_f(fila[5]),
+                    t1_alcanzado=_b(fila[13]),
+                    t2_alcanzado=_b(fila[14]),
+                    stop_en_breakeven=_b(fila[15]),
+                    cantidad_cerrada_t1=_f(fila[16]),
+                    cantidad_cerrada_t2=_f(fila[17]),
                 )
-                sym = fila[1]
-                if sym not in simulador.posiciones:
-                    simulador.posiciones[sym] = []
-                simulador.posiciones[sym].append(pos)
+                simulador.posiciones[symbol] = pos
             except Exception as e:
                 logger.warning(f"Posición saltada: {e}")
-        logger.info(f"✅ Posiciones cargadas: {sum(len(v) for v in simulador.posiciones.values())}")
+        logger.info(f"✅ Posiciones cargadas: {len(simulador.posiciones)}")
 
     # ─────────────── SIMULADOR ESTADO ────────────────────
 
