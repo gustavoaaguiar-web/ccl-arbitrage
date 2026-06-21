@@ -1,32 +1,34 @@
 """
-Simulador de Arbitraje CCL
-==========================
-- Capital inicial: ARS 10.000.000
-- Por operación: 15% del capital total (efectivo + posiciones valoradas)
-- Máximo 2 posiciones por especie
-- Apertura: 10:30 hs Argentina (ambos mercados abiertos)
-- Cierre nuevas compras: 16:30 hs
-- Cierre forzado: 16:50 hs
+Simulador — Sistema GG Swing
+============================
+- Capital inicial: ARS 15.000.000 (ajustable, ver resumen: rango 15-20M)
+- Sizing por RIESGO, no por % fijo de capital:
+      cantidad = (capital_total × riesgo_pct) / (precio_entry − precio_stop)
+  riesgo_pct depende del score de la señal (más score → más riesgo permitido):
+      score 65–74  → 0.5%
+      score 75–89  → 1.0%
+      score 90–100 → 1.5%
+- Máximo 1 posición abierta por símbolo a la vez.
+- Sin tope explícito de exposición total (pendiente de revisar más adelante).
+- Apertura: 10:30 hs Argentina. Cierre nuevas compras: 16:30. Cierre forzado: 16:50.
 
-CONDICIONES DE SALIDA (cualquiera activa el cierre, en orden de prioridad):
-  [C] PnL precio ≤ -0.50%                              → stop loss duro
-  [A] desvío CCL ≥ 0.00%  AND  PnL precio ≥ +0.80%    → spread revertido con ganancia
-  [B] pnl_max ≥ +0.60%  AND  caída desde pico ≥ 0.20% → trailing con ganancia confirmada
-  [D] PnL precio ≥ +1.60%                              → take profit puro
+SALIDA ESCALONADA EN 3 TARGETS (reemplaza las 4 condiciones CCL del sistema viejo):
+  T1 alcanzado → cierra 40% de la posición, stop sube a breakeven
+                 (desde acá el peor resultado posible es PnL=0%, nunca pérdida)
+  T2 alcanzado → cierra 40% adicional, queda 20% con trailing
+  Cierre final → 3 variantes:
+                   - trailing stop tocado (sobre el 20% remanente)
+                   - stop loss directo (si nunca llegó a T1)
+                   - máximo hold a 21 días
 
-MODELO DE CLIMA (Simons):
-  El dict `climas` que recibe procesar_ciclo() debe venir del HMM entrenado
-  sobre log-returns del precio USD del subyacente (NO niveles CCL).
-  Esto garantiza que clima y señal sean variables ortogonales:
-
-    Señal  →  CCL del CEDEAR bajo vs mediana    (oportunidad de arbitraje)
-    Clima  →  régimen bull/bear en USD           (momentum del subyacente)
-
-  Compra solo cuando AMBOS coinciden. Venta solo por desvío CCL.
+Esta clase NO calcula el trailing stop (HMA16) ni decide si hay señal de
+entrada — eso es responsabilidad de signal_engine.py. Simulator solo
+ejecuta la mecánica de capital/posiciones dado lo que signal_engine.py
+le indica (entrar con tales niveles, o que el trailing actual es tal valor).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional
 import logging
 
@@ -42,124 +44,127 @@ HORA_APERTURA       = time(10, 30)
 HORA_CIERRE_COMPRA  = time(16, 30)
 HORA_CIERRE_FORZADO = time(16, 50)
 
-# ─── PARÁMETROS DE ENTRADA ───────────────────────────────
-CAPITAL_INICIAL            = 10_000_000.0
-PCT_POR_OPERACION          = 0.15
-MAX_POSICIONES_POR_ESPECIE = 2
+# ─── PARÁMETROS DE CAPITAL ───────────────────────────────
+CAPITAL_INICIAL    = 15_000_000.0
+MAX_POSICIONES_POR_SIMBOLO = 1
+MAX_HOLD_DIAS = 21
 
-UMBRAL_COMPRA_DEFAULT = -0.70   # desvío CCL mínimo para comprar (%, negativo)
+# ─── SIZING POR RIESGO, escalonado por score ─────────────
+# (score_min, score_max) → riesgo_pct (decimal, ej. 0.005 = 0.5%)
+TRAMOS_RIESGO_POR_SCORE = [
+    (65, 75, 0.005),
+    (75, 90, 0.010),
+    (90, 101, 0.015),  # 101 para incluir score=100 en el tramo superior
+]
 
-# ─── PARÁMETROS DE SALIDA ────────────────────────────────
-UMBRAL_VENTA_A         = 0.00   # desvío CCL — [A] reversión spread (%)
-UMBRAL_VENTA_A_PNL     = 0.80   # PnL precio mínimo para Salida A (%)
-UMBRAL_VENTA_B_PNL_MIN = 0.60   # PnL % mínimo alcanzado para habilitar trailing B (%)
-UMBRAL_VENTA_B_CAIDA   = 0.20   # caída desde pico PnL% para disparar trailing B (%)
-TAKE_PROFIT_D          = 1.60   # PnL precio — [D] take profit puro (%)
-STOP_LOSS_C            = -0.50  # PnL precio — [C] stop loss duro (%)
+# ─── SALIDA ESCALONADA ───────────────────────────────────
+PCT_CIERRE_T1 = 0.40   # cierra 40% al llegar a T1
+PCT_CIERRE_T2 = 0.40   # cierra 40% adicional al llegar a T2
+# el 20% restante queda con trailing hasta cierre final
 
 # ─── TIMEZONE ────────────────────────────────────────────
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
+def riesgo_pct_por_score(score: float) -> float:
+    """Devuelve el % de riesgo de capital habilitado para un score dado."""
+    for lo, hi, riesgo in TRAMOS_RIESGO_POR_SCORE:
+        if lo <= score < hi:
+            return riesgo
+    # score fuera de rango esperado (no debería pasar el gate de 65pts) → no operar
+    return 0.0
+
+
 @dataclass
 class Posicion:
-    """Representa una posición abierta."""
-    id:            str
-    symbol:        str
-    cantidad:      float
-    precio_entry:  float
-    monto_entry:   float
-    ts_entry:      str
-    ccl_entry:     float
-    dev_entry:     float
-    precio_actual: float = 0.0
-    pnl:           float = 0.0
-    pnl_pct:       float = 0.0
-    pnl_max_pct:        float = 0.0
-    dev_max_alcanzado:  float = -99.0
+    """Representa una posición abierta del Sistema GG Swing."""
+    id:                 str
+    symbol:             str
+    score:              float
+    cantidad_inicial:   float
+    cantidad_restante:  float
+    precio_entry:       float
+    monto_entry:        float
+    precio_stop:        float   # stop vigente — se mueve a breakeven tras T1
+    precio_t1:           float
+    precio_t2:           float
+    precio_t3:           float   # referencia informativa (trailing maneja el cierre real)
+    riesgo_pct:          float
+    ts_entry:            str
+    precio_actual:        float = 0.0
+    pnl:                   float = 0.0
+    pnl_pct:                float = 0.0
+    pnl_max_pct:              float = 0.0
+    t1_alcanzado:              bool = False
+    t2_alcanzado:               bool = False
+    stop_en_breakeven:           bool = False
+    cantidad_cerrada_t1:        float = 0.0
+    cantidad_cerrada_t2:        float = 0.0
+
+    def dias_en_cartera(self, ahora: Optional[datetime] = None) -> int:
+        ahora = ahora or datetime.now()
+        try:
+            entry_dt = datetime.strptime(self.ts_entry, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return 0
+        return (ahora.date() - entry_dt.date()).days
 
 
 @dataclass
 class Operacion:
-    """Registro de una operación cerrada."""
-    id:            str
-    symbol:        str
-    tipo:          str
-    cantidad:      float
-    precio_entry:  float
-    precio_exit:   float
-    monto_entry:   float
-    monto_exit:    float
-    pnl:           float
-    pnl_pct:       float
-    ts_entry:      str
-    ts_exit:       str
-    motivo_cierre: str   # SALIDA_A / SALIDA_B / TAKE_PROFIT_D / STOP_LOSS_C /
-                         # CIERRE_FORZADO / VENTA_MANUAL
+    """Registro de un cierre (parcial o total) del Sistema GG Swing."""
+    id:             str
+    symbol:         str
+    tipo:           str          # PARCIAL_T1 / PARCIAL_T2 / CIERRE_FINAL
+    cantidad:       float
+    precio_entry:   float
+    precio_exit:    float
+    monto_entry:    float
+    monto_exit:     float
+    pnl:            float
+    pnl_pct:        float
+    ts_entry:       str
+    ts_exit:        str
+    motivo_cierre:  str   # TARGET_1 / TARGET_2 / TRAILING_STOP / STOP_LOSS /
+                          # MAX_HOLD_21D / CIERRE_FORZADO / VENTA_MANUAL
 
 
 class Simulador:
     """
-    Motor de simulación de arbitraje CCL intradiario.
+    Motor de simulación del Sistema GG Swing.
 
-    Lógica de decisión:
-        COMPRA  →  desvío CCL < umbral_compra  AND  clima == "🟢 BULL"
-        VENTA   →  cualquiera de las condiciones de salida se cumple
-
-    Args:
-        capital_inicial:   Capital en ARS al iniciar.
-        umbral_compra:     Desvío CCL mínimo para comprar (%, negativo).
-                           Default -0.50. Usado cuando no hay umbrales_por_hora.
-        umbrales_por_hora: Dict opcional con umbrales dinámicos por rango horario.
-                           Si se proporciona, umbral_compra actúa solo como fallback.
-                           Valores en DECIMAL (ej. -0.0065 = -0.65%).
-                           Estructura:
-                           {
-                               "09:50-11:30": -0.0065,
-                               "11:31-15:29": -0.0050,
-                               "15:30-16:29": -0.0065,
-                               "16:30+":      None       # bloquea compras
-                           }
+    Flujo:
+        ENTRADA → signal_engine.py decide; simulator.abrir_posicion() ejecuta
+                  el sizing por riesgo y registra niveles (stop/T1/T2/T3).
+        GESTIÓN → procesar_ciclo() actualiza precios y evalúa T1/T2/stop/
+                  máximo hold. El trailing del remanente post-T2 se recibe
+                  como parámetro (trailing_stops) calculado externamente.
+        SALIDA   → cierre total o parcial según el caso, registrado como
+                  Operacion.
     """
 
-    def __init__(
-        self,
-        capital_inicial: float = CAPITAL_INICIAL,
-        umbral_compra: float = UMBRAL_COMPRA_DEFAULT,
-        umbrales_por_hora: dict = None,
-    ):
-        self.capital_inicial    = capital_inicial
-        self.efectivo           = capital_inicial
-        self.umbral_compra      = umbral_compra          # en % (ej. -0.50)
-        self.umbrales_por_hora  = umbrales_por_hora or {}  # valores en decimal
-        self.posiciones:  Dict[str, List[Posicion]] = {}
+    def __init__(self, capital_inicial: float = CAPITAL_INICIAL):
+        self.capital_inicial = capital_inicial
+        self.efectivo         = capital_inicial
+        self.posiciones:  Dict[str, Posicion] = {}   # 1 posición por símbolo
         self.operaciones: List[Operacion] = []
         self._op_counter = 0
-
-        # Log inicial
-        if self.umbrales_por_hora:
-            logger.info(f"✅ Simulador inicializado con UMBRALES DINÁMICOS: {self.umbrales_por_hora}")
-        else:
-            logger.info(f"✅ Simulador inicializado con umbral fijo: {self.umbral_compra:.2f}%")
+        logger.info(f"✅ Simulador GG Swing inicializado. Capital: ${capital_inicial:,.0f}")
 
     # ──────────────────── ESTADO ─────────────────────────
 
-    def capital_en_posiciones(self, precios_ars: Dict[str, float]) -> float:
+    def capital_en_posiciones(self, precios: Dict[str, float]) -> float:
         total = 0.0
-        for sym, poss in self.posiciones.items():
-            precio = precios_ars.get(sym, 0)
-            for pos in poss:
-                total += pos.cantidad * precio
+        for sym, pos in self.posiciones.items():
+            precio = precios.get(sym, pos.precio_actual)
+            total += pos.cantidad_restante * precio
         return total
 
-    def capital_total(self, precios_ars: Dict[str, float]) -> float:
-        return self.efectivo + self.capital_en_posiciones(precios_ars)
+    def capital_total(self, precios: Dict[str, float]) -> float:
+        return self.efectivo + self.capital_en_posiciones(precios)
 
-    def monto_por_operacion(self, precios_ars: Dict[str, float]) -> float:
-        return self.capital_total(precios_ars) * PCT_POR_OPERACION
-
-    def posiciones_abiertas_count(self, symbol: str) -> int:
-        return len(self.posiciones.get(symbol, []))
+    def tiene_posicion(self, symbol: str) -> bool:
+        return symbol in self.posiciones
 
     # ──────────────────── HORARIOS ───────────────────────
 
@@ -175,163 +180,121 @@ class Simulador:
         t = ahora if isinstance(ahora, time) else ahora.time()
         return t >= HORA_CIERRE_FORZADO
 
-    def mercado_abierto(self, ahora=None) -> bool:
-        if ahora is None:
-            ahora = datetime.now().time()
-        t = ahora if isinstance(ahora, time) else ahora.time()
-        return t >= HORA_APERTURA
+    # ──────────────────── SIZING ─────────────────────────
 
-    def _obtener_umbral_por_hora(self, ahora=None) -> Optional[float]:
+    def calcular_cantidad(
+        self,
+        score: float,
+        precio_entry: float,
+        precio_stop: float,
+        precios: Dict[str, float],
+    ) -> tuple:
         """
-        Retorna el umbral de compra activo según la hora ART, en PORCENTAJE (%).
-
-        - Sin umbrales_por_hora: devuelve self.umbral_compra (ej. -0.50).
-        - Con umbrales_por_hora: convierte el valor decimal del dict a % (×100).
-        - Devuelve None si compras están bloqueadas para esa franja.
-
-        Args:
-            ahora: time, datetime (con o sin tz), o None (usa hora ART actual).
-
-        Returns:
-            float (umbral en %, ej. -0.65) o None (compras bloqueadas).
+        Devuelve (cantidad, riesgo_pct, monto) según riesgo por score.
+        cantidad = (capital_total × riesgo_pct) / (precio_entry − precio_stop)
         """
-        if not self.umbrales_por_hora:
-            return self.umbral_compra  # ya está en %
+        riesgo_pct = riesgo_pct_por_score(score)
+        if riesgo_pct <= 0:
+            return 0.0, riesgo_pct, 0.0
 
-        # Normalizar ahora → hora y minuto
-        if ahora is None:
-            ahora = datetime.now(TZ_ARG)
+        riesgo_por_unidad = precio_entry - precio_stop
+        if riesgo_por_unidad <= 0:
+            logger.warning(
+                f"Stop inválido (>= entry): entry={precio_entry} stop={precio_stop}"
+            )
+            return 0.0, riesgo_pct, 0.0
 
-        if isinstance(ahora, time):
-            hora, minuto = ahora.hour, ahora.minute
-        else:
-            hora, minuto = ahora.hour, ahora.minute
+        capital = self.capital_total(precios)
+        monto_riesgo = capital * riesgo_pct
+        cantidad = monto_riesgo / riesgo_por_unidad
+        monto = cantidad * precio_entry
 
-        hora_min = hora * 60 + minuto
+        # No exceder el efectivo disponible
+        if monto > self.efectivo:
+            cantidad = self.efectivo / precio_entry if precio_entry > 0 else 0.0
+            monto = cantidad * precio_entry
 
-        # Rangos en minutos desde medianoche
-        rangos = [
-            ((9 * 60 + 50,  11 * 60 + 30), self.umbrales_por_hora.get("09:50-11:30", -0.0065)),
-            ((11 * 60 + 31, 15 * 60 + 29), self.umbrales_por_hora.get("11:31-15:29", -0.0050)),
-            ((15 * 60 + 30, 16 * 60 + 29), self.umbrales_por_hora.get("15:30-16:29", -0.0065)),
-            ((16 * 60 + 30, 23 * 60 + 59), self.umbrales_por_hora.get("16:30+",       None)),
-        ]
-
-        for (inicio, fin), umbral_decimal in rangos:
-            if inicio <= hora_min <= fin:
-                # umbral_decimal: None → bloqueo; float → convertir a %
-                return None if umbral_decimal is None else umbral_decimal * 100
-
-        return None  # fuera de horario → bloqueo
-
-    # ──────────────────── CONDICIONES DE SALIDA ──────────
-
-    def _evaluar_salida(self, pos: Posicion, dev: float) -> Optional[str]:
-        """
-        Evalúa si una posición debe cerrarse. Retorna el motivo o None.
-
-        Orden de prioridad:
-          1. [C] Stop loss duro         → pnl_pct ≤ -0.50%
-          2. [A] Reversión del spread   → dev ≥ 0.00% AND pnl_pct ≥ +0.80%
-          3. [B] Trailing confirmado    → pnl_max ≥ +0.60% AND caída desde pico ≥ 0.20%
-          4. [D] Take profit puro       → pnl_pct ≥ +1.60%
-        """
-        pnl_pct = pos.pnl_pct
-
-        # [C] Stop loss duro — prioridad máxima
-        if pnl_pct <= STOP_LOSS_C:
-            return "STOP_LOSS_C"
-
-        # [A] Spread revertido Y precio subió al menos 1%
-        if dev >= UMBRAL_VENTA_A and pnl_pct >= UMBRAL_VENTA_A_PNL:
-            return "SALIDA_A"
-
-        # [B] Trailing con ganancia confirmada
-        if pos.pnl_max_pct >= UMBRAL_VENTA_B_PNL_MIN:
-            caida_desde_pico = pos.pnl_max_pct - pnl_pct
-            if caida_desde_pico >= UMBRAL_VENTA_B_CAIDA:
-                return "SALIDA_B"
-
-        # [D] Take profit puro — independiente del desvío CCL
-        if pnl_pct >= TAKE_PROFIT_D:
-            return "TAKE_PROFIT_D"
-
-        return None
+        return cantidad, riesgo_pct, monto
 
     # ──────────────────── OPERACIONES ────────────────────
 
     def abrir_posicion(
         self,
         symbol: str,
-        precio_ars: float,
-        ccl: float,
-        dev: float,
-        precios_ars: Dict[str, float],
+        score: float,
+        precio_entry: float,
+        precio_stop: float,
+        precio_t1: float,
+        precio_t2: float,
+        precio_t3: float,
+        precios: Dict[str, float],
         ahora=None,
     ) -> Optional[Posicion]:
         if not self.puede_comprar(ahora):
             return None
-        if self.posiciones_abiertas_count(symbol) >= MAX_POSICIONES_POR_ESPECIE:
+        if self.tiene_posicion(symbol):
             return None
-        if precio_ars <= 0:
-            return None
-
-        monto = self.monto_por_operacion(precios_ars)
-        if monto > self.efectivo:
-            monto = self.efectivo
-        if monto <= 0:
+        if precio_entry <= 0 or precio_stop <= 0 or precio_stop >= precio_entry:
             return None
 
-        cantidad = monto / precio_ars
+        cantidad, riesgo_pct, monto = self.calcular_cantidad(
+            score, precio_entry, precio_stop, precios
+        )
+        if cantidad <= 0 or monto <= 0:
+            return None
 
         self._op_counter += 1
         pos = Posicion(
             id=f"P{self._op_counter:04d}",
             symbol=symbol,
-            cantidad=cantidad,
-            precio_entry=precio_ars,
+            score=score,
+            cantidad_inicial=cantidad,
+            cantidad_restante=cantidad,
+            precio_entry=precio_entry,
             monto_entry=monto,
+            precio_stop=precio_stop,
+            precio_t1=precio_t1,
+            precio_t2=precio_t2,
+            precio_t3=precio_t3,
+            riesgo_pct=riesgo_pct,
             ts_entry=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ccl_entry=ccl,
-            dev_entry=dev,
-            precio_actual=precio_ars,
-            pnl_pct=0.0,
-            pnl_max_pct=0.0,
-            dev_max_alcanzado=-99.0,
+            precio_actual=precio_entry,
         )
 
         self.efectivo -= monto
-        if symbol not in self.posiciones:
-            self.posiciones[symbol] = []
-        self.posiciones[symbol].append(pos)
+        self.posiciones[symbol] = pos
 
         logger.info(
-            f"🟢 COMPRA {symbol}: {cantidad:.2f} u. @ ${precio_ars:.2f} | "
-            f"Monto: ${monto:,.0f} | dev: {dev:+.2f}%"
+            f"🟢 ENTRADA {symbol}: {cantidad:.2f} u. @ ${precio_entry:.2f} | "
+            f"score={score:.0f} | riesgo={riesgo_pct*100:.1f}% | "
+            f"stop=${precio_stop:.2f} T1=${precio_t1:.2f} T2=${precio_t2:.2f} T3=${precio_t3:.2f}"
         )
         return pos
 
-    def cerrar_posicion(
+    def _registrar_cierre(
         self,
-        symbol: str,
         pos: Posicion,
-        precio_ars: float,
+        cantidad: float,
+        precio_exit: float,
         motivo: str,
+        tipo: str,
     ) -> Operacion:
-        monto_exit = pos.cantidad * precio_ars
-        pnl        = monto_exit - pos.monto_entry
-        pnl_pct    = (pnl / pos.monto_entry) * 100 if pos.monto_entry else 0
+        monto_entry_parcial = cantidad * pos.precio_entry
+        monto_exit = cantidad * precio_exit
+        pnl = monto_exit - monto_entry_parcial
+        pnl_pct = ((precio_exit / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
 
         self.efectivo += monto_exit
 
+        self._op_counter += 1
         op = Operacion(
-            id=pos.id,
-            symbol=symbol,
-            tipo="COMPRA/VENTA",
-            cantidad=pos.cantidad,
+            id=f"{pos.id}-{tipo}",
+            symbol=pos.symbol,
+            tipo=tipo,
+            cantidad=cantidad,
             precio_entry=pos.precio_entry,
-            precio_exit=precio_ars,
-            monto_entry=pos.monto_entry,
+            precio_exit=precio_exit,
+            monto_entry=monto_entry_parcial,
             monto_exit=monto_exit,
             pnl=pnl,
             pnl_pct=pnl_pct,
@@ -342,124 +305,143 @@ class Simulador:
         self.operaciones.append(op)
 
         emoji = "✅" if pnl > 0 else "❌"
-        logger.info(f"{emoji} CIERRE {symbol} [{motivo}]: PnL ${pnl:+,.0f} ({pnl_pct:+.2f}%)")
+        logger.info(
+            f"{emoji} {tipo} {pos.symbol} [{motivo}]: {cantidad:.2f} u. "
+            f"PnL ${pnl:+,.0f} ({pnl_pct:+.2f}%)"
+        )
         return op
 
-    def cerrar_todas(self, precios_ars: Dict[str, float], motivo: str = "CIERRE_FORZADO"):
+    def cerrar_todas(self, precios: Dict[str, float], motivo: str = "CIERRE_FORZADO"):
         cerradas = []
         for symbol in list(self.posiciones.keys()):
-            for pos in list(self.posiciones[symbol]):
-                precio = precios_ars.get(symbol, 0)
-                if precio <= 0:
-                    precio = pos.precio_actual
-                if precio <= 0:
-                    precio = pos.precio_entry
-                    logger.warning(
-                        f"CIERRE_FORZADO {symbol}: sin precio, usando entry ${precio:.2f}"
-                    )
-                op = self.cerrar_posicion(symbol, pos, precio, motivo)
-                cerradas.append(op)
-            self.posiciones[symbol] = []
+            pos = self.posiciones[symbol]
+            precio = precios.get(symbol, pos.precio_actual) or pos.precio_entry
+            op = self._registrar_cierre(pos, pos.cantidad_restante, precio, motivo, "CIERRE_FINAL")
+            cerradas.append(op)
+            del self.posiciones[symbol]
         return cerradas
 
     # ──────────────────── CICLO PRINCIPAL ────────────────
 
     def procesar_ciclo(
         self,
-        ccl_map: Dict[str, float],
-        ccl_avg: float,
-        precios_ars: Dict[str, float],
-        climas: Dict[str, str],
+        precios: Dict[str, float],
+        trailing_stops: Optional[Dict[str, float]] = None,
         ahora=None,
     ) -> dict:
-        abiertas = []
+        """
+        trailing_stops: dict opcional {symbol: precio_trailing_actual},
+        calculado externamente (signal_engine.py, vía HMA16) y solo
+        relevante para posiciones que ya alcanzaron T2 (remanente 20%).
+        """
+        trailing_stops = trailing_stops or {}
+        abiertas_evento = []
         cerradas = []
+        parciales = []
         forzadas = []
 
         # 1. Cierre forzado 16:50
         if self.debe_cerrar_forzado(ahora):
-            forzadas = self.cerrar_todas(precios_ars, "CIERRE_FORZADO")
-            return {"abiertas": [], "cerradas": [], "forzadas": forzadas}
+            forzadas = self.cerrar_todas(precios, "CIERRE_FORZADO")
+            return {"cerradas": [], "parciales": [], "forzadas": forzadas}
 
-        # 2. Actualizar precios, PnL y pico máximo de cada posición abierta
-        for sym, poss in self.posiciones.items():
-            precio = precios_ars.get(sym, 0)
+        # 2. Actualizar precios / PnL / pico de cada posición
+        for sym, pos in self.posiciones.items():
+            precio = precios.get(sym, 0)
             if precio <= 0:
                 continue
-            for pos in poss:
-                pos.precio_actual = precio
-                pos.pnl     = (precio - pos.precio_entry) * pos.cantidad
-                pos.pnl_pct = ((precio / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
-                if pos.pnl_pct > pos.pnl_max_pct:
-                    pos.pnl_max_pct = pos.pnl_pct
+            pos.precio_actual = precio
+            pos.pnl = (precio - pos.precio_entry) * pos.cantidad_restante
+            pos.pnl_pct = ((precio / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
+            if pos.pnl_pct > pos.pnl_max_pct:
+                pos.pnl_max_pct = pos.pnl_pct
 
-        # 3. Evaluar condiciones de salida para posiciones abiertas
+        # 3. Evaluar salidas (orden de prioridad: stop > targets > max hold)
         for symbol in list(self.posiciones.keys()):
-            if not self.posiciones[symbol]:
-                continue
-            ccl = ccl_map.get(symbol, 0)
-            if ccl <= 0 or ccl_avg == 0:
-                continue
-            dev    = (ccl / ccl_avg - 1) * 100
-            precio = precios_ars.get(symbol, 0)
+            pos = self.posiciones[symbol]
+            precio = precios.get(symbol, 0)
             if precio <= 0:
                 continue
 
-            for pos in list(self.posiciones[symbol]):
-                if dev > pos.dev_max_alcanzado:
-                    pos.dev_max_alcanzado = dev
-                motivo = self._evaluar_salida(pos, dev)
-                if motivo:
-                    op = self.cerrar_posicion(symbol, pos, precio, motivo)
+            # 3a. Stop loss / breakeven vigente
+            if precio <= pos.precio_stop:
+                motivo = "STOP_LOSS" if not pos.stop_en_breakeven else "STOP_BREAKEVEN"
+                op = self._registrar_cierre(pos, pos.cantidad_restante, precio, motivo, "CIERRE_FINAL")
+                cerradas.append(op)
+                del self.posiciones[symbol]
+                continue
+
+            # 3b. Trailing stop (solo aplica tras T2, sobre el remanente 20%)
+            if pos.t2_alcanzado:
+                trailing = trailing_stops.get(symbol)
+                if trailing is not None and precio <= trailing:
+                    op = self._registrar_cierre(
+                        pos, pos.cantidad_restante, precio, "TRAILING_STOP", "CIERRE_FINAL"
+                    )
                     cerradas.append(op)
+                    del self.posiciones[symbol]
+                    continue
 
-            ids_cerradas = {op.id for op in cerradas}
-            self.posiciones[symbol] = [
-                p for p in self.posiciones[symbol] if p.id not in ids_cerradas
-            ]
+            # 3c. Target 2 — cierra 40% adicional
+            if pos.t1_alcanzado and not pos.t2_alcanzado and precio >= pos.precio_t2:
+                cantidad_cerrar = pos.cantidad_inicial * PCT_CIERRE_T2
+                cantidad_cerrar = min(cantidad_cerrar, pos.cantidad_restante)
+                op = self._registrar_cierre(pos, cantidad_cerrar, precio, "TARGET_2", "PARCIAL_T2")
+                parciales.append(op)
+                pos.cantidad_restante -= cantidad_cerrar
+                pos.cantidad_cerrada_t2 = cantidad_cerrar
+                pos.t2_alcanzado = True
+                if pos.cantidad_restante <= 0:
+                    del self.posiciones[symbol]
+                continue
 
-        # 4. Abrir posiciones: desvío bajo AND clima BULL
-        if self.puede_comprar(ahora):
-            # umbral_activo en % — None si compras bloqueadas por franja horaria
-            umbral_activo = self._obtener_umbral_por_hora(ahora)
+            # 3d. Target 1 — cierra 40%, stop sube a breakeven
+            if not pos.t1_alcanzado and precio >= pos.precio_t1:
+                cantidad_cerrar = pos.cantidad_inicial * PCT_CIERRE_T1
+                cantidad_cerrar = min(cantidad_cerrar, pos.cantidad_restante)
+                op = self._registrar_cierre(pos, cantidad_cerrar, precio, "TARGET_1", "PARCIAL_T1")
+                parciales.append(op)
+                pos.cantidad_restante -= cantidad_cerrar
+                pos.cantidad_cerrada_t1 = cantidad_cerrar
+                pos.t1_alcanzado = True
+                pos.precio_stop = pos.precio_entry  # breakeven: peor caso ya es PnL=0
+                pos.stop_en_breakeven = True
+                continue
 
-            if umbral_activo is not None:
-                for symbol, ccl in ccl_map.items():
-                    if ccl_avg == 0:
-                        continue
-                    dev    = (ccl / ccl_avg - 1) * 100
-                    clima  = climas.get(symbol, "🔴 BEAR")
-                    precio = precios_ars.get(symbol, 0)
+            # 3e. Máximo hold 21 días
+            if pos.dias_en_cartera(ahora if isinstance(ahora, datetime) else None) >= MAX_HOLD_DIAS:
+                op = self._registrar_cierre(
+                    pos, pos.cantidad_restante, precio, "MAX_HOLD_21D", "CIERRE_FINAL"
+                )
+                cerradas.append(op)
+                del self.posiciones[symbol]
+                continue
 
-                    # umbral_activo y dev ambos en % → comparación directa
-                    if dev < umbral_activo and clima == "🟢 BULL" and precio > 0:
-                        pos = self.abrir_posicion(symbol, precio, ccl, dev, precios_ars, ahora)
-                        if pos:
-                            abiertas.append(pos)
-
-        return {"abiertas": abiertas, "cerradas": cerradas, "forzadas": forzadas}
+        return {"cerradas": cerradas, "parciales": parciales, "forzadas": forzadas}
 
     # ──────────────────── RESUMEN ────────────────────────
 
-    def resumen(self, precios_ars: Dict[str, float]) -> dict:
-        cap_total = self.capital_total(precios_ars)
+    def resumen(self, precios: Dict[str, float]) -> dict:
+        cap_total = self.capital_total(precios)
         pnl_total = cap_total - self.capital_inicial
-        pnl_pct   = (pnl_total / self.capital_inicial) * 100
+        pnl_pct = (pnl_total / self.capital_inicial) * 100 if self.capital_inicial else 0
 
-        ops_ganadoras = [o for o in self.operaciones if o.pnl > 0]
-        win_rate      = (len(ops_ganadoras) / len(self.operaciones) * 100) if self.operaciones else 0
+        ops_finales = [o for o in self.operaciones if o.tipo == "CIERRE_FINAL"]
+        ganadoras = [o for o in self.operaciones if o.pnl > 0]
+        win_rate = (len(ganadoras) / len(self.operaciones) * 100) if self.operaciones else 0
 
         return {
-            "capital_inicial":       self.capital_inicial,
-            "efectivo":              self.efectivo,
-            "en_posiciones":         self.capital_en_posiciones(precios_ars),
-            "capital_total":         cap_total,
-            "pnl_total":             pnl_total,
-            "pnl_pct":               pnl_pct,
-            "operaciones_total":     len(self.operaciones),
-            "operaciones_ganadoras": len(ops_ganadoras),
-            "win_rate":              win_rate,
-            "posiciones_abiertas":   sum(len(v) for v in self.posiciones.values()),
+            "capital_inicial":     self.capital_inicial,
+            "efectivo":            self.efectivo,
+            "en_posiciones":       self.capital_en_posiciones(precios),
+            "capital_total":       cap_total,
+            "pnl_total":           pnl_total,
+            "pnl_pct":             pnl_pct,
+            "operaciones_total":   len(self.operaciones),
+            "trades_cerrados":     len(ops_finales),
+            "operaciones_ganadoras": len(ganadoras),
+            "win_rate":            win_rate,
+            "posiciones_abiertas": len(self.posiciones),
         }
 
     def fila_sheets_operacion(self, op: Operacion) -> list:
@@ -476,8 +458,8 @@ class Simulador:
             op.motivo_cierre,
         ]
 
-    def fila_sheets_estado(self, precios_ars: Dict[str, float]) -> list:
-        r = self.resumen(precios_ars)
+    def fila_sheets_estado(self, precios: Dict[str, float]) -> list:
+        r = self.resumen(precios)
         return [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             round(r["capital_total"], 2),
