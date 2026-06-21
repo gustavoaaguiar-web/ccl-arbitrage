@@ -1,5 +1,4 @@
-FRENADO POR AHORA defaults:
-  name: GG HMM-CCL Trader
+ name: GG HMM-CCL Trader
 
 on:
   schedule:
