@@ -1,4 +1,3 @@
-FRENADO POR AHORA 
 """
 GG HMM-CCL — Dashboard Streamlit (solo lectura)
 ================================================
