@@ -8,6 +8,8 @@ Hojas:
 - Estado_Cartera       → snapshots del capital total
 - Posiciones_Abiertas  → posiciones abiertas (persiste entre reinicios)
 - Simulador_Estado     → efectivo y contador (persiste entre reinicios)
+- Backtest_Resultados  → trades individuales del backtest (Ruta A)
+- Backtest_Metricas    → métricas agregadas por símbolo del backtest
 
 NOTA DE TRANSICIÓN (jun-2026):
 Las hojas CCL_Historial y HMM_Historial del sistema de arbitraje anterior
@@ -53,6 +55,16 @@ HEADERS = {
                              "stop_en_breakeven", "cantidad_cerrada_t1",
                              "cantidad_cerrada_t2"],
     "Simulador_Estado": ["efectivo", "op_counter"],
+    "Backtest_Resultados": ["Symbol", "Regimen", "Fecha Entry", "Fecha Salida",
+                             "Entry", "Stop", "T1", "T2", "T3",
+                             "Precio Salida Final", "Días", "Motivo Salida",
+                             "R Realizado", "Score", "ATR%",
+                             "T1 cerrada", "T2 cerrada", "T3 cerrada",
+                             "Precio T1", "Precio T2", "Precio T3"],
+    "Backtest_Metricas":   ["Symbol", "Trades", "Win Rate %", "R Promedio",
+                             "R Total", "Profit Factor", "Max DD (R)",
+                             "Mejor Trade R", "Peor Trade R",
+                             "Días Prom en Trade"],
 }
 
 
@@ -96,10 +108,6 @@ class SheetsManager:
                 logger.info(f"📋 Hoja creada: {nombre}")
             else:
                 ws = self.sh.worksheet(nombre)
-                # Si la hoja ya existía con headers viejos (ccl_entry/dev_entry),
-                # se re-escribe la fila 1 con los headers nuevos. Esto NO borra
-                # filas de datos existentes — si la hoja tenía posiciones viejas
-                # del sistema CCL, conviene vaciarla a mano antes del primer run.
                 fila1_actual = ws.row_values(1)
                 if fila1_actual != headers:
                     ws.update('A1', [headers])
@@ -124,11 +132,6 @@ class SheetsManager:
         más adelante. Cada snapshot es un dict con:
         {symbol, precio, apertura, maximo, minimo, volumen_nominal,
          cantidad_operaciones}
-
-        Se escribe 1 fila por símbolo por ciclo (cada ~60s dentro de
-        cada ejecución GHA). No hace rolling window — esta hoja se
-        acumula indefinidamente para servir de base histórica del
-        Sistema GG Swing.
         """
         from datetime import datetime
         ws = self._hojas.get("Historico_Merval_Raw")
@@ -154,8 +157,7 @@ class SheetsManager:
     def cargar_historico_merval_raw(self, symbol: str = None) -> List[dict]:
         """
         Carga el histórico crudo de Merval. Si se pasa symbol, filtra
-        solo ese símbolo. Retorna lista ordenada por ts ascendente,
-        lista para resamplear a velas 30min/4H.
+        solo ese símbolo. Retorna lista ordenada por ts ascendente.
         """
         ws = self._hojas.get("Historico_Merval_Raw")
         if not ws:
@@ -212,7 +214,7 @@ class SheetsManager:
     # ─────────────── POSICIONES ABIERTAS ─────────────────
 
     def guardar_posiciones(self, simulador):
-        """Sobreescribe la hoja con las posiciones abiertas actuales (Sistema GG Swing)."""
+        """Sobreescribe la hoja con las posiciones abiertas actuales."""
         ws = self._hojas.get("Posiciones_Abiertas")
         if not ws:
             return
@@ -243,7 +245,7 @@ class SheetsManager:
             ws.append_rows(filas)
 
     def cargar_posiciones(self, simulador):
-        """Carga posiciones abiertas desde Sheets al simulador (Sistema GG Swing)."""
+        """Carga posiciones abiertas desde Sheets al simulador."""
         from simulator import Posicion
         ws = self._hojas.get("Posiciones_Abiertas")
         if not ws:
@@ -252,7 +254,7 @@ class SheetsManager:
         if len(filas) < 2:
             return
         simulador.posiciones = {}
-        ids_vistos = set()  # guard anti-duplicados por solapamiento de runs GHA
+        ids_vistos = set()
         for fila in filas[1:]:
             try:
                 if len(fila) < 18:
@@ -315,3 +317,33 @@ class SheetsManager:
             logger.info(f"✅ Estado simulador cargado: efectivo=${simulador.efectivo:,.0f} ops={simulador._op_counter}")
         except Exception as e:
             logger.warning(f"Error cargando estado simulador: {e}")
+
+    # ─────────────── BACKTEST ────────────────────────────
+
+    def limpiar_y_escribir(self, nombre_hoja: str, filas: List[list]):
+        """
+        Reemplaza el contenido completo de una hoja con las filas dadas.
+        La primera fila de `filas` debe ser el encabezado.
+        Usado por run_backtest.py para subir resultados frescos en cada
+        ejecución sin acumular runs anteriores.
+
+        Si la hoja no existe en _hojas (por ejemplo Backtest_Resultados
+        creada en _inicializar_hojas), lanza KeyError con mensaje claro.
+        """
+        ws = self._hojas.get(nombre_hoja)
+        if not ws:
+            raise KeyError(
+                f"Hoja '{nombre_hoja}' no encontrada. "
+                f"Hojas disponibles: {list(self._hojas.keys())}"
+            )
+        if not filas:
+            logger.warning(f"limpiar_y_escribir('{nombre_hoja}'): sin filas, no se escribe nada")
+            return
+
+        ws.clear()
+        # batch_update en un solo request para no agotar cuota de Sheets API
+        ws.update(
+            range_name="A1",
+            values=filas,
+        )
+        logger.info(f"✅ '{nombre_hoja}' actualizada: {len(filas) - 1} filas de datos")
