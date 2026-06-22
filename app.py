@@ -130,7 +130,7 @@ def fetch_precios():
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
-    st.title("📈 GG Investments — Sistema GG Swing")
+    st.title("GG Investments 📊🦅")
     st.caption("IOL (ARS) | Dashboard — operado por GitHub Actions")
 
     if not init_state():
