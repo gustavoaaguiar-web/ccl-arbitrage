@@ -138,7 +138,6 @@ jobs:
           pip install \
             requests \
             numpy \
-            hmmlearn \
             gspread \
             google-auth \
             pytz
