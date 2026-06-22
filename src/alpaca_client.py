@@ -6,7 +6,7 @@ Docs: https://docs.alpaca.markets/reference/stocklatesttrade
 
 import logging
 import threading
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 import requests
 from datetime import datetime, timezone, timedelta
 
@@ -22,7 +22,7 @@ ADR_SYMBOLS = ["GGAL", "YPF", "PAM", "BMA", "TGSU2", "CEPU"]
 class AlpacaClient:
     """
     Cliente REST + WebSocket para Alpaca Markets.
-    - REST: precios actuales (snapshot)
+    - REST: precios actuales (snapshot) y barras OHLCV históricas
     - WebSocket: stream en tiempo real
     """
 
@@ -37,7 +37,7 @@ class AlpacaClient:
         self._ws_thread: Optional[threading.Thread] = None
         self._running = False
 
-    # ─────────────────────── REST SNAPSHOT ───────────────────────
+    # ─────────────────────────── REST SNAPSHOT ───────────────────────
 
     def get_snapshots(self, symbols: list = None) -> Dict[str, dict]:
         """
@@ -60,9 +60,9 @@ class AlpacaClient:
                 latest_quote = snap.get("latestQuote", {})
                 result[sym] = {
                     "symbol": sym,
-                    "last":   latest_trade.get("p"),      # precio último trade
-                    "bid":    latest_quote.get("bp"),      # bid price
-                    "ask":    latest_quote.get("ap"),      # ask price
+                    "last":   latest_trade.get("p"),
+                    "bid":    latest_quote.get("bp"),
+                    "ask":    latest_quote.get("ap"),
                     "ts":     latest_trade.get("t"),
                 }
             self._prices.update(result)
@@ -76,6 +76,134 @@ class AlpacaClient:
         if symbol not in self._prices:
             self.get_snapshots([symbol])
         return self._prices.get(symbol, {}).get("last")
+
+    # ─────────────────────────── BARRAS OHLCV ────────────────────────
+
+    def get_bars(
+        self,
+        symbols: list,
+        timeframe: str = "1Day",
+        limit: int = 252,
+        desde: Optional[str] = None,
+        hasta: Optional[str] = None,
+    ) -> Dict[str, List[dict]]:
+        """
+        Descarga barras OHLCV completas para una lista de símbolos.
+
+        Retorna:
+            {symbol: [{"t": ..., "o": ..., "h": ..., "l": ..., "c": ..., "v": ...}, ...]}
+
+        Args:
+            symbols:   lista de tickers
+            timeframe: "1Day", "4Hour", "30Min", etc.
+            limit:     máximo de barras a pedir (default 252 = ~1 año diario)
+            desde:     fecha inicio ISO "YYYY-MM-DD" (tiene precedencia sobre limit)
+            hasta:     fecha fin ISO "YYYY-MM-DD" (default: hoy)
+
+        Si se pasa `desde`, se ignora el cálculo dinámico de lookback por limit
+        y se usa la fecha directamente.
+        """
+        if desde:
+            start = f"{desde}T00:00:00Z"
+        else:
+            # Calcular lookback dinámico según timeframe y limit
+            if "Day" in timeframe:
+                dias = int(limit * 1.6)
+            elif "Hour" in timeframe:
+                try:
+                    horas = int(timeframe.replace("Hour", "").replace("h", ""))
+                except ValueError:
+                    horas = 1
+                dias = int((limit * horas / 6.5) * 1.6) + 10
+            elif "Min" in timeframe:
+                try:
+                    mins = int(timeframe.replace("Min", "").replace("min", ""))
+                except ValueError:
+                    mins = 30
+                dias = int((limit * mins / (6.5 * 60)) * 1.6) + 5
+            else:
+                dias = limit * 2
+            start = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        params = {
+            "symbols":   ",".join(symbols),
+            "timeframe": timeframe,
+            "start":     start,
+            "limit":     limit,
+            "feed":      "iex",
+        }
+        if hasta:
+            params["end"] = f"{hasta}T23:59:59Z"
+
+        try:
+            resp = requests.get(
+                f"{ALPACA_BASE_URL}/stocks/bars",
+                headers=self.headers,
+                params=params,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("bars", {})
+
+            result = {}
+            for sym, bars in data.items():
+                if len(bars) < 5:
+                    logger.warning(f"Alpaca: {sym} solo tiene {len(bars)} barras — ignorado")
+                    continue
+                # Normalizar a dicts con claves consistentes
+                result[sym] = [
+                    {
+                        "t": b.get("t", ""),
+                        "o": float(b.get("o", 0)),
+                        "h": float(b.get("h", 0)),
+                        "l": float(b.get("l", 0)),
+                        "c": float(b.get("c", 0)),
+                        "v": float(b.get("v", 0)),
+                    }
+                    for b in bars
+                ]
+
+            logger.info(
+                f"Alpaca bars ({timeframe}): "
+                f"{', '.join(f'{s}={len(v)}bars' for s, v in result.items())}"
+            )
+            return result
+
+        except requests.RequestException as e:
+            logger.error(f"Error Alpaca bars ({timeframe}): {e}")
+            return {}
+
+    def get_bars_diarias(
+        self,
+        symbol: str,
+        desde: str,
+        hasta: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        Alias conveniente para run_backtest.py — retorna barras diarias
+        OHLCV de un único símbolo como lista de dicts.
+
+        Args:
+            symbol: ticker (ej. "GGAL", "MELI")
+            desde:  fecha inicio "YYYY-MM-DD"
+            hasta:  fecha fin "YYYY-MM-DD" (default: hoy)
+
+        Retorna lista de dicts [{t, o, h, l, c, v}, ...] ordenada
+        ascendentemente por fecha.
+        """
+        result = self.get_bars(
+            symbols=[symbol],
+            timeframe="1Day",
+            limit=1000,       # techo generoso — el rango desde/hasta acota igual
+            desde=desde,
+            hasta=hasta,
+        )
+        bars = result.get(symbol, [])
+        # Alpaca ya devuelve en orden ascendente, pero aseguramos
+        bars.sort(key=lambda b: b["t"])
+        return bars
 
     # ──────────────────────── WEBSOCKET RT ───────────────────────
 
@@ -131,62 +259,6 @@ class AlpacaClient:
 
     def stop_stream(self):
         self._running = False
-
-    def get_bars(self, symbols: list, timeframe: str = "1Day", limit: int = 252) -> Dict[str, list]:
-        """
-        Descarga barras OHLCV para una lista de simbolos.
-        Retorna dict {sym: [close, close, ...]} con los ultimos `limit` cierres.
-
-        El lookback en dias se calcula dinamicamente segun el timeframe y limit,
-        para garantizar que siempre se obtengan suficientes barras.
-
-        Ejemplos:
-          get_bars(syms, "1Day",  252) → ~1 año de barras diarias
-          get_bars(syms, "4Hour", 252) → ~3 meses de barras 4H
-          get_bars(syms, "1Hour", 252) → ~6 semanas de barras 1H
-        """
-        # Calcular cuántos días calendario necesitamos según el timeframe
-        # Se multiplica por 1.6 para cubrir fines de semana y feriados
-        if "Day" in timeframe:
-            dias_necesarios = int(limit * 1.6)       # 252 → 403 días (~13.5 meses)
-        elif "Hour" in timeframe:
-            try:
-                horas = int(timeframe.replace("Hour", "").replace("h", ""))
-            except ValueError:
-                horas = 1
-            # Mercado abre ~6.5h/día, ~5 días/semana → 6.5*5 = 32.5h/semana
-            dias_necesarios = int((limit * horas / 6.5) * 1.6) + 10
-        else:
-            dias_necesarios = limit * 2  # fallback conservador
-
-        start = (datetime.now(timezone.utc) - timedelta(days=dias_necesarios)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-
-        try:
-            resp = requests.get(
-                f"{ALPACA_BASE_URL}/stocks/bars",
-                headers=self.headers,
-                params={
-                    "symbols":   ",".join(symbols),
-                    "timeframe": timeframe,
-                    "start":     start,
-                    "limit":     limit,
-                    "feed":      "iex",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json().get("bars", {})
-            result = {sym: [b["c"] for b in bars] for sym, bars in data.items() if len(bars) >= 5}
-            logger.info(
-                f"Alpaca bars ({timeframe}, {dias_necesarios}d lookback): "
-                f"{', '.join(f'{s}={len(v)}bars' for s, v in result.items())}"
-            )
-            return result
-        except requests.RequestException as e:
-            logger.error(f"Error Alpaca bars ({timeframe}): {e}")
-            return {}
 
     def test_connection(self) -> dict:
         """Prueba conexión Alpaca y retorna sample de GGAL."""
