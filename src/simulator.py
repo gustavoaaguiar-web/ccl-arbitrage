@@ -25,6 +25,14 @@ Esta clase NO calcula el trailing stop (HMA16) ni decide si hay señal de
 entrada — eso es responsabilidad de signal_engine.py. Simulator solo
 ejecuta la mecánica de capital/posiciones dado lo que signal_engine.py
 le indica (entrar con tales niveles, o que el trailing actual es tal valor).
+
+FIX (12/jul/2026): puede_comprar(), debe_cerrar_forzado() y
+Posicion.dias_en_cartera() usaban datetime.now() naive como default
+cuando no se les pasaba `ahora` explícito. En GitHub Actions (runner en
+UTC) eso corre los horarios de mercado ~3hs — ej. a las 14:00 ART
+(mercado abierto) el runner ve las 17:00 UTC y puede_comprar() devolvía
+False de más, o debe_cerrar_forzado() disparaba un cierre forzado 3hs
+antes de tiempo. Se corrigió usando datetime.now(TZ_ARG) como default.
 """
 
 from dataclasses import dataclass, field
@@ -66,6 +74,12 @@ PCT_CIERRE_T2 = 0.40   # cierra 40% adicional al llegar a T2
 TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
+def ahora_argentina() -> datetime:
+    """Hora actual con timezone de Argentina — usar SIEMPRE en vez de
+    datetime.now() naive para cualquier decisión de horario de mercado."""
+    return datetime.now(TZ_ARG)
+
+
 def riesgo_pct_por_score(score: float) -> float:
     """Devuelve el % de riesgo de capital habilitado para un score dado."""
     for lo, hi, riesgo in TRAMOS_RIESGO_POR_SCORE:
@@ -102,7 +116,7 @@ class Posicion:
     cantidad_cerrada_t2:        float = 0.0
 
     def dias_en_cartera(self, ahora: Optional[datetime] = None) -> int:
-        ahora = ahora or datetime.now()
+        ahora = ahora or ahora_argentina()
         try:
             entry_dt = datetime.strptime(self.ts_entry, "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -170,13 +184,13 @@ class Simulador:
 
     def puede_comprar(self, ahora=None) -> bool:
         if ahora is None:
-            ahora = datetime.now().time()
+            ahora = ahora_argentina().time()
         t = ahora if isinstance(ahora, time) else ahora.time()
         return HORA_APERTURA <= t <= HORA_CIERRE_COMPRA
 
     def debe_cerrar_forzado(self, ahora=None) -> bool:
         if ahora is None:
-            ahora = datetime.now().time()
+            ahora = ahora_argentina().time()
         t = ahora if isinstance(ahora, time) else ahora.time()
         return t >= HORA_CIERRE_FORZADO
 
@@ -257,7 +271,7 @@ class Simulador:
             precio_t2=precio_t2,
             precio_t3=precio_t3,
             riesgo_pct=riesgo_pct,
-            ts_entry=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ts_entry=ahora_argentina().strftime("%Y-%m-%d %H:%M:%S"),
             precio_actual=precio_entry,
         )
 
@@ -299,7 +313,7 @@ class Simulador:
             pnl=pnl,
             pnl_pct=pnl_pct,
             ts_entry=pos.ts_entry,
-            ts_exit=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ts_exit=ahora_argentina().strftime("%Y-%m-%d %H:%M:%S"),
             motivo_cierre=motivo,
         )
         self.operaciones.append(op)
@@ -461,7 +475,7 @@ class Simulador:
     def fila_sheets_estado(self, precios: Dict[str, float]) -> list:
         r = self.resumen(precios)
         return [
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            ahora_argentina().strftime("%Y-%m-%d %H:%M:%S"),
             round(r["capital_total"], 2),
             round(r["efectivo"], 2),
             round(r["en_posiciones"], 2),
@@ -470,4 +484,5 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-        ]
+          ]
+          
