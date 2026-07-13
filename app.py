@@ -22,6 +22,13 @@ Por ahora solo expone precios en vivo, posiciones, KPIs e historial.
 
 NO USA ALPACA — el panel de precios funciona enteramente con IOL
 (get_panel("MerVal") + get_panel("CEDEARs")), igual que trader_job.py.
+
+FIX (12/jul/2026): VALO cotiza en EEUU (como MELI) y se opera acá como
+CEDEAR, no como acción del panel Merval — se movió de MERVAL_SET a
+CEDEARS_SET para que fetch_precios() lo busque en el panel de IOL
+correcto (get_panel("CEDEARs")). Antes siempre mostraba precio en blanco
+porque nunca aparecía en get_panel("MerVal"). Mismo fix aplicado ya en
+signal_engine.py y trader_job.py.
 """
 
 import time
@@ -59,8 +66,10 @@ HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
 
 # ─── UNIVERSO DE 20 ACTIVOS ───────────────────────────────
-MERVAL_SET = {"GGAL", "YPFD", "PAMP", "BMA", "CEPU", "TGSU2", "SUPV", "BBAR", "VALO"}
-CEDEARS_SET = {"MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL"}
+# VALO cotiza en EEUU (como MELI) — se opera como CEDEAR, no como acción
+# Merval. Ver nota de FIX arriba.
+MERVAL_SET = {"GGAL", "YPFD", "PAMP", "BMA", "CEPU", "TGSU2", "SUPV", "BBAR"}
+CEDEARS_SET = {"MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL", "VALO"}
 UNIVERSO = MERVAL_SET | CEDEARS_SET
 
 
