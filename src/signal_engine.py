@@ -34,9 +34,11 @@ from typing import Optional
 # Universo de activos
 # ---------------------------------------------------------------------------
 MERVAL = ["GGAL", "YPFD", "PAMP", "BMA", "CEPU", "TGSU2", "SUPV", "BBAR"]
-CEDEARS = ["MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL", "VALO"]
-# VALO cotiza en EEUU (como MELI), no en el panel Merval de IOL — por eso
-# get_panel("MerVal") siempre devolvía 8/9 símbolos. Corregido el 12/jul/2026.
+CEDEARS = ["MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL"]
+# VALO se sacó del universo el 13/jul/2026: no cotiza en el panel Merval
+# de IOL (causaba el 8/9 en los logs) ni tampoco está cedearizado en el
+# panel CEDEARs de IOL (precio siempre en blanco). Sin fuente ARS
+# confiable para operarlo dentro de este sistema — universo queda en 19.
 
 # ---------------------------------------------------------------------------
 # Parámetros por régimen de volatilidad (según ATR% diario, 14 períodos)
@@ -292,5 +294,5 @@ def generar_senal(symbol: str, highs, lows, closes, volumes,
             "smi_actual": None if np.isnan(smi_val[-1]) else round(float(smi_val[-1]), 1),
             "gate_fundamental": gate,
         },
-)
-          
+  )
+                     
