@@ -65,21 +65,21 @@ HORA_APERTURA = dtime(10, 30)
 HORA_CIERRE   = dtime(17, 0)
 
 # Universo Merval del Sistema GG Swing (8 activos que cotizan en BYMA/CNV
-# vía IOL). VALO se sacó de este set el 12/jul/2026: cotiza en EEUU (como
-# MELI), no en el panel Merval — por eso get_panel("MerVal") nunca lo
-# devolvía y el log mostraba sistemáticamente "8/9 símbolos guardados".
+# vía IOL).
 MERVAL_SWING_SET = {
     "GGAL", "YPFD", "PAMP", "CEPU", "BMA",
     "TGSU2", "SUPV", "BBAR",
 }
 
-# Universo CEDEARs del Sistema GG Swing (12 activos — datos vía Alpaca,
+# Universo CEDEARs del Sistema GG Swing (11 activos — datos vía Alpaca,
 # no se gestionan en este job todavía; se deja documentado para referencia
 # cuando se integre alpaca_client.py renovado).
-# VALO sumado acá el 12/jul/2026 (cotiza en EEUU, no en Merval).
+# VALO se sacó del universo el 13/jul/2026: no está en el panel Merval de
+# IOL ni tampoco cedearizado en el panel CEDEARs — sin fuente ARS
+# confiable para operarlo dentro de este sistema.
 CEDEAR_SWING_SET = {
     "MELI", "NVDA", "TSLA", "MSFT", "PLTR",
-    "VIST", "MU", "AMZN", "IBIT", "META", "AAPL", "VALO",
+    "VIST", "MU", "AMZN", "IBIT", "META", "AAPL",
 }
 
 
