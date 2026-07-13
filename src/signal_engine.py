@@ -292,4 +292,5 @@ def generar_senal(symbol: str, highs, lows, closes, volumes,
             "smi_actual": None if np.isnan(smi_val[-1]) else round(float(smi_val[-1]), 1),
             "gate_fundamental": gate,
         },
-    )
+)
+          
