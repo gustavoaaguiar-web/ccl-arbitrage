@@ -23,11 +23,11 @@ Por ahora solo expone precios en vivo, posiciones, KPIs e historial.
 NO USA ALPACA — el panel de precios funciona enteramente con IOL
 (get_panel("MerVal") + get_panel("CEDEARs")), igual que trader_job.py.
 
-FIX (12/jul/2026): VALO cotiza en EEUU (como MELI) y se opera acá como
-CEDEAR, no como acción del panel Merval — se movió de MERVAL_SET a
-CEDEARS_SET para que fetch_precios() lo busque en el panel de IOL
-correcto (get_panel("CEDEARs")). Antes siempre mostraba precio en blanco
-porque nunca aparecía en get_panel("MerVal"). Mismo fix aplicado ya en
+FIX (13/jul/2026): VALO se sacó del universo por completo. No cotiza en
+el panel Merval de IOL (siempre mostraba precio en blanco ahí) ni está
+cedearizado en el panel CEDEARs de IOL tampoco (mismo problema del otro
+lado). Sin fuente ARS confiable para mostrarlo/operarlo en este sistema
+— universo queda en 19 activos. Mismo criterio aplicado en
 signal_engine.py y trader_job.py.
 """
 
@@ -65,11 +65,10 @@ HORA_APERTURA    = dtime(10, 30)
 HORA_STOP_COMPRA = dtime(16, 30)
 HORA_CIERRE      = dtime(16, 50)
 
-# ─── UNIVERSO DE 20 ACTIVOS ───────────────────────────────
-# VALO cotiza en EEUU (como MELI) — se opera como CEDEAR, no como acción
-# Merval. Ver nota de FIX arriba.
+# ─── UNIVERSO DE 19 ACTIVOS ───────────────────────────────
+# VALO se sacó del universo — ver nota de FIX arriba.
 MERVAL_SET = {"GGAL", "YPFD", "PAMP", "BMA", "CEPU", "TGSU2", "SUPV", "BBAR"}
-CEDEARS_SET = {"MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL", "VALO"}
+CEDEARS_SET = {"MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT", "META", "AAPL"}
 UNIVERSO = MERVAL_SET | CEDEARS_SET
 
 
@@ -203,7 +202,7 @@ def main():
             "Las señales de entrada (score, HMA, SMI) todavía no están integradas aquí.")
 
     # ── Tabla de precios en vivo ───────────────────────────
-    st.subheader("📋 Precios en Vivo — Universo de 20 activos")
+    st.subheader("📋 Precios en Vivo — Universo de 19 activos")
     if precios:
         filas = []
         for sym in sorted(UNIVERSO):
