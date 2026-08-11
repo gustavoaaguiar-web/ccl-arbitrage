@@ -153,6 +153,86 @@ class IOLClient:
             logger.error(f"Error panel IOL {panel}: {e}")
             return []
 
+    def get_historico_diario(self, symbol: str, desde: str, hasta: str, mercado: str = "bCBA") -> list:
+        """
+        Retorna histórico diario OHLCV de un símbolo vía el endpoint
+        'seriehistorica' (mismo endpoint validado en vivo con Pydroid en
+        el diagnóstico de granularidad IOL — devuelve 1 registro diario
+        para fechas de más de 7 días atrás).
+
+        Args:
+            symbol:  ticker IOL (ej. "GGAL")
+            desde:   fecha inicio, formato "YYYY-MM-DD"
+            hasta:   fecha fin, formato "YYYY-MM-DD"
+            mercado: "bCBA" (default, panel líder argentino)
+
+        Retorna lista ascendente por fecha, mismo shape que
+        alpaca_client.get_bars_diarias, para que backtest_engine.py sea
+        agnóstico a la fuente:
+            [{"t": "2024-01-02T00:00:00", "o": .., "h": .., "l": .., "c": .., "v": ..}, ...]
+
+        ⚠️ Los nombres de campo del JSON de respuesta (fechaHora, apertura,
+        maximo, minimo, ultimoPrecio, volumen) están tomados del resto de
+        este cliente (get_quote/get_panel usan esos mismos nombres para los
+        campos análogos) pero no fueron confirmados contra un request real
+        a este endpoint específico. Antes de confiar en el backtest,
+        correr una vez con --solo <un símbolo Merval> y loguear/inspeccionar
+        el primer registro crudo (ver bloque comentado más abajo) para
+        verificar que los nombres coinciden.
+        """
+        self._ensure_token()
+        try:
+            resp = self.session.get(
+                f"{IOL_BASE_URL}/api/v2/{mercado}/Titulos/{symbol}"
+                f"/Cotizacion/seriehistorica/{desde}/{hasta}/sinAjustar",
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Error histórico diario {symbol}: {e}")
+            return []
+        except ValueError as e:
+            logger.error(f"Respuesta no-JSON en histórico diario {symbol}: {e}")
+            return []
+
+        if not isinstance(data, list):
+            logger.error(f"Shape inesperado en histórico diario {symbol}: {type(data)}")
+            return []
+
+        # DEBUG one-off: descomentar para verificar nombres de campo reales
+        # if data:
+        #     logger.info(f"DEBUG {symbol} primer registro crudo: {data[0]}")
+
+        bars = []
+        for d in data:
+            fecha = d.get("fechaHora")
+            apertura = d.get("apertura")
+            maximo = d.get("maximo")
+            minimo = d.get("minimo")
+            cierre = d.get("ultimoPrecio")
+            volumen = d.get("volumen")
+
+            # Descarta registros incompletos (feriados/datos faltantes) sin
+            # romper el resto del histórico — mismo criterio de resiliencia
+            # que trader_job.py aplica a ultimoPrecio nulo en tiempo real.
+            if fecha is None or cierre is None:
+                continue
+            try:
+                bars.append({
+                    "t": fecha,
+                    "o": float(apertura) if apertura is not None else float(cierre),
+                    "h": float(maximo) if maximo is not None else float(cierre),
+                    "l": float(minimo) if minimo is not None else float(cierre),
+                    "c": float(cierre),
+                    "v": float(volumen) if volumen is not None else 0.0,
+                })
+            except (TypeError, ValueError):
+                continue
+
+        bars.sort(key=lambda b: b["t"])
+        return bars
+
     def get_all_cedear_quotes(self) -> dict:
         """Trae cotizaciones de todos los cedears configurados (legacy — usar get_panel)."""
         quotes = {}
