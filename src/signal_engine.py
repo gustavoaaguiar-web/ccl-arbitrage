@@ -19,6 +19,20 @@ velas diarias y mañana sobre 30min sin tocar el código — cuando haya
 suficiente historia intradía se puede reintroducir el multi-timeframe real
 pasando series separadas.
 
+NOTA — recalibración de umbrales SMI (10-ago-2026):
+Los umbrales originales de smi_os (-150/-170/-190/-200) asumían un rango
+de SMI mayor al que produce esta fórmula (200 * rel_s / diff_s), cuyo
+rango teórico normal es aproximadamente ±100 y en la práctica opera casi
+siempre dentro de ±60/±70. Con los umbrales originales, cond3 (momentum)
+prácticamente nunca se cumplía, especialmente en regímenes ALTA/MUY_ALTA
+(-190/-200 eran inalcanzables), dejando el sistema sin el filtro de
+"entrada en agotamiento de sobreventa" que es parte central del diseño.
+Se recalibraron a un rango realista (-40/-50/-60/-70), manteniendo la
+misma lógica relativa: a mayor volatilidad del régimen, se exige una
+sobreventa más profunda antes de confirmar el rebote. Estos valores son
+un punto de partida razonable — el backtest (Ruta A) debe validar si
+requieren ajuste fino adicional.
+
 Uso típico:
     señal = generar_senal("GGAL", highs, lows, closes, volumes, es_cedear=False)
     if señal.senal_valida:
@@ -44,10 +58,10 @@ CEDEARS = ["MELI", "NVDA", "TSLA", "MSFT", "PLTR", "VIST", "MU", "AMZN", "IBIT",
 # Parámetros por régimen de volatilidad (según ATR% diario, 14 períodos)
 # ---------------------------------------------------------------------------
 REGIMENES = {
-    "BAJA":     {"atr_max": 1.5,        "hma_rapida": 21, "hma_lenta": 55, "stop_mult": 1.8, "smi_periodo": 14, "smi_os": -150, "vol_min": 1.10, "t1_rr": 1.5, "t2_rr": 2.8},
-    "MEDIA":    {"atr_max": 2.5,        "hma_rapida": 18, "hma_lenta": 50, "stop_mult": 2.0, "smi_periodo": 12, "smi_os": -170, "vol_min": 1.15, "t1_rr": 1.6, "t2_rr": 3.0},
-    "ALTA":     {"atr_max": 4.0,        "hma_rapida": 16, "hma_lenta": 45, "stop_mult": 2.2, "smi_periodo": 10, "smi_os": -190, "vol_min": 1.20, "t1_rr": 1.7, "t2_rr": 3.2},
-    "MUY_ALTA": {"atr_max": float("inf"), "hma_rapida": 13, "hma_lenta": 40, "stop_mult": 2.5, "smi_periodo": 8,  "smi_os": -200, "vol_min": 1.30, "t1_rr": 1.8, "t2_rr": 3.5},
+    "BAJA":     {"atr_max": 1.5,        "hma_rapida": 21, "hma_lenta": 55, "stop_mult": 1.8, "smi_periodo": 14, "smi_os": -40, "vol_min": 1.10, "t1_rr": 1.5, "t2_rr": 2.8},
+    "MEDIA":    {"atr_max": 2.5,        "hma_rapida": 18, "hma_lenta": 50, "stop_mult": 2.0, "smi_periodo": 12, "smi_os": -50, "vol_min": 1.15, "t1_rr": 1.6, "t2_rr": 3.0},
+    "ALTA":     {"atr_max": 4.0,        "hma_rapida": 16, "hma_lenta": 45, "stop_mult": 2.2, "smi_periodo": 10, "smi_os": -60, "vol_min": 1.20, "t1_rr": 1.7, "t2_rr": 3.2},
+    "MUY_ALTA": {"atr_max": float("inf"), "hma_rapida": 13, "hma_lenta": 40, "stop_mult": 2.5, "smi_periodo": 8,  "smi_os": -70, "vol_min": 1.30, "t1_rr": 1.8, "t2_rr": 3.5},
 }
 
 PESOS_SCORE = {
@@ -81,7 +95,7 @@ def wma(values: np.ndarray, period: int) -> np.ndarray:
 
 def hma(values: np.ndarray, period: int) -> np.ndarray:
     """Hull Moving Average: WMA(2*WMA(n/2) - WMA(n), sqrt(n))."""
-    half = max(1, period // 2)
+    half = max(1, int(round(period / 2)))
     sqrt_p = max(1, int(round(np.sqrt(period))))
     wma_half = wma(values, half)
     wma_full = wma(values, period)
@@ -294,5 +308,4 @@ def generar_senal(symbol: str, highs, lows, closes, volumes,
             "smi_actual": None if np.isnan(smi_val[-1]) else round(float(smi_val[-1]), 1),
             "gate_fundamental": gate,
         },
-  )
-                     
+    )
