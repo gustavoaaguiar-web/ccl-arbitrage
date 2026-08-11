@@ -1,0 +1,59 @@
+name: GG Backtest Ruta A
+
+on:
+  workflow_dispatch:
+    inputs:
+      solo:
+        description: 'SÃ­mbolos separados por coma (ej: GGAL o GGAL,YPFD). VacÃ­o = universo completo (19)'
+        required: false
+        default: 'GGAL'
+      desde:
+        description: 'Fecha inicio YYYY-MM-DD'
+        required: false
+        default: '2024-01-01'
+      hasta:
+        description: 'Fecha fin YYYY-MM-DD'
+        required: false
+        default: '2024-02-01'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            requests \
+            numpy \
+            gspread \
+            google-auth \
+            pytz \
+            yfinance
+
+      - name: Run backtest
+        env:
+          IOL_USER:            ${{ secrets.IOL_USER }}
+          IOL_PASS:            ${{ secrets.IOL_PASS }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          # Placeholders â€” no se usan en corridas --solo con sÃ­mbolos Merval,
+          # pero get_secrets() los exige igual. Si mÃ¡s adelante corrÃ©s CEDEARs
+          # acÃ¡, reemplazar por secrets.ALPACA_KEY_ID / secrets.ALPACA_SECRET_KEY reales.
+          ALPACA_KEY_ID:     ${{ secrets.ALPACA_KEY_ID || 'dummy' }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY || 'dummy' }}
+        run: |
+          if [ -z "${{ github.event.inputs.solo }}" ]; then
+            python run_backtest.py --desde "${{ github.event.inputs.desde }}" --hasta "${{ github.event.inputs.hasta }}"
+          else
+            python run_backtest.py --solo "${{ github.event.inputs.solo }}" --desde "${{ github.event.inputs.desde }}" --hasta "${{ github.event.inputs.hasta }}"
+          fi
