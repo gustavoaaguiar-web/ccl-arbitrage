@@ -177,7 +177,7 @@ def backtest_symbol(symbol: str, bars: List[dict], es_cedear: bool) -> List[Trad
         senal = se.generar_senal(symbol, highs, lows, closes, volumes, es_cedear, modo_backtest=True)
 
         if senal.senal_valida:
-            _, params = se._clasificar_regimen(senal.detalle.get("atr_pct") or 0.0)
+            params = se.REGIMENES[senal.regimen]
             trade = _simular_trade(bars, i, senal, params, symbol)
             resultados.append(trade)
             dias_avanzados = trade.dias if trade.dias > 0 else 1
@@ -218,4 +218,3 @@ def calcular_metricas(symbol: str, trades: List[TradeResultado]) -> list:
         round(float(profit_factor), 2) if profit_factor != float("inf") else "inf",
         round(float(max_dd), 2), round(float(mejor), 2), round(float(peor), 2), round(float(dias_prom), 1),
     ]
-    
