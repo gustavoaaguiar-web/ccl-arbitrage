@@ -1,27 +1,30 @@
 """
 run_backtest.py — Backtest walk-forward Ruta A (diario), Sistema GG Swing
 ==========================================================================
-Corre signal_engine.py sobre historia diaria completa de los 20 activos del
-universo (8 Merval vía IOL, 12 CEDEARs vía Alpaca), simula cada trade con
+Corre signal_engine.py sobre historia diaria completa del universo (8
+Merval vía IOL, 11 CEDEARs vía Alpaca), simula cada trade con
 backtest_engine.py, y sube los resultados a Google Sheets
 (Backtest_Resultados / Backtest_Metricas) vía sheets.limpiar_y_escribir().
 
-⚠️ BLOQUEANTE PARA MERVAL: iol_client.py todavía no tiene un método de
-   histórico diario (get_historico_diario o similar) — ver el docstring
-   de fetch_bars_merval() más abajo con el shape esperado y un endpoint
-   sugerido a partir de lo que ya testeaste en Pydroid (seriehistorica).
-   Los CEDEARs vía Alpaca SÍ están listos para correr ya
-   (alpaca_client.get_bars_diarias ya existe).
+Flag --dolarizar:
+    Deflacta los bars de Merval por el CCL del día (ver ccl_historico.py)
+    antes de generar señales y simular trades, para separar "el sistema
+    tiene timing real" de "el peso se devaluó" — HMA50 con pendiente
+    positiva es casi trivial en pesos nominales durante un período
+    inflacionario. Los CEDEARs (vía Alpaca) ya cotizan en USD y no se
+    tocan con este flag.
+    Cuando está activo, los resultados van a pestañas separadas
+    (Backtest_Resultados_USD / Backtest_Metricas_USD) para no pisar los
+    resultados nominales en pesos y poder comparar ambos lado a lado.
 
 Uso:
-    python run_backtest.py --desde 2024-01-01 --hasta 2026-07-01
-    python run_backtest.py --solo GGAL,MELI      # subset rápido para pruebas
-    python run_backtest.py --solo MELI,NVDA,TSLA,MSFT,PLTR,VIST,MU,AMZN,IBIT,META,AAPL,VALO
-                                                   # correr solo CEDEARs (ya funcional)
+    python run_backtest.py --desde 2023-01-01 --hasta 2024-08-01
+    python run_backtest.py --solo GGAL,MELI
+    python run_backtest.py --solo GGAL,YPFD,PAMP,BMA,CEPU,TGSU2,SUPV,BBAR --dolarizar
 
 Credenciales via variables de entorno:
-    IOL_USER, IOL_PASS, GCP_SERVICE_ACCOUNT   (igual que trader_job.py)
-    ALPACA_KEY_ID, ALPACA_SECRET_KEY          (nuevas — no las usa trader_job.py)
+    IOL_USER, IOL_PASS, GCP_SERVICE_ACCOUNT
+    ALPACA_KEY_ID, ALPACA_SECRET_KEY
 """
 
 import os
@@ -37,6 +40,7 @@ from alpaca_client   import AlpacaClient
 from sheets_manager  import SheetsManager, HEADERS
 import signal_engine  as se
 import backtest_engine as be
+import ccl_historico as cclh
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,49 +65,7 @@ def get_secrets():
 
 
 def fetch_bars_merval(iol: IOLClient, symbol: str, desde: str, hasta: str) -> list:
-    """
-    ⚠️ get_historico_diario() no existe todavía en iol_client.py — este es
-    el único punto del pipeline que depende de agregarlo.
-
-    Shape esperado de retorno (igual al de alpaca_client.get_bars_diarias):
-        [{"t": "2024-01-02T00:00:00Z", "o": .., "h": .., "l": .., "c": .., "v": ..}, ...]
-        ordenado ascendente por fecha.
-
-    Método sugerido para agregar a IOLClient, a partir del endpoint
-    'seriehistorica' que ya testeaste en Pydroid contra la API real:
-
-        def get_historico_diario(self, symbol, desde, hasta, mercado="bCBA"):
-            self._ensure_token()
-            resp = self.session.get(
-                f"{IOL_BASE_URL}/api/v2/{mercado}/Titulos/{symbol}"
-                f"/Cotizacion/seriehistorica/{desde}/{hasta}/sinAjustar",
-                timeout=20,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return [
-                {
-                    "t": d.get("fechaHora", ""),
-                    "o": float(d.get("apertura", 0)),
-                    "h": float(d.get("maximo", 0)),
-                    "l": float(d.get("minimo", 0)),
-                    "c": float(d.get("ultimoPrecio", 0)),
-                    "v": float(d.get("volumen", 0)),
-                }
-                for d in data
-            ]
-
-    ⚠️ El nombre de los campos del JSON de respuesta (fechaHora, apertura,
-    etc.) es una suposición basada en el resto de iol_client.py — hay que
-    confirmarlo contra un request real antes de confiar en el resultado.
-    """
-    if not hasattr(iol, "get_historico_diario"):
-        raise NotImplementedError(
-            "IOLClient no tiene get_historico_diario(). Agregalo a iol_client.py "
-            "antes de correr el backtest sobre símbolos Merval — ver el docstring "
-            "de fetch_bars_merval() en run_backtest.py para el shape esperado y "
-            "un endpoint sugerido."
-        )
+    """Histórico diario Merval vía IOL (seriehistorica) — ver iol_client.get_historico_diario."""
     return iol.get_historico_diario(symbol, desde, hasta)
 
 
@@ -115,9 +77,12 @@ def main():
                         help="Fecha fin YYYY-MM-DD (default: hoy)")
     parser.add_argument("--solo", default=None,
                         help="Lista de símbolos separada por coma, para pruebas rápidas")
+    parser.add_argument("--dolarizar", action="store_true",
+                        help="Deflacta Merval por CCL antes de backtestear (ver ccl_historico.py). "
+                             "No afecta CEDEARs, que ya cotizan en USD vía Alpaca.")
     args = parser.parse_args()
 
-    logger.info(f"🚀 Backtest Ruta A — {args.desde} a {args.hasta}")
+    logger.info(f"🚀 Backtest Ruta A — {args.desde} a {args.hasta}" + (" [DOLARIZADO vía CCL]" if args.dolarizar else ""))
 
     s = get_secrets()
 
@@ -131,21 +96,41 @@ def main():
 
     universo = [x.strip() for x in args.solo.split(",")] if args.solo else (se.MERVAL + se.CEDEARS)
 
-    filas_resultados = [HEADERS["Backtest_Resultados"]]
-    filas_metricas = [HEADERS["Backtest_Metricas"]]
+    ccl_dict = {}
+    if args.dolarizar:
+        ccl_dict = cclh.obtener_ccl_historico(args.desde, args.hasta)
+        if not ccl_dict:
+            logger.error(
+                "⚠️ --dolarizar activo pero no se pudo traer CCL histórico. "
+                "Los símbolos Merval se van a saltar para no correr un backtest "
+                "silenciosamente en pesos nominales creyendo que está dolarizado."
+            )
+
+    sheet_resultados = "Backtest_Resultados_USD" if args.dolarizar else "Backtest_Resultados"
+    sheet_metricas = "Backtest_Metricas_USD" if args.dolarizar else "Backtest_Metricas"
+
+    filas_resultados = [HEADERS[sheet_resultados]]
+    filas_metricas = [HEADERS[sheet_metricas]]
 
     for symbol in universo:
         es_cedear = symbol in se.CEDEARS
-        logger.info(f"── {symbol} ({'CEDEAR/Alpaca' if es_cedear else 'Merval/IOL'}) ──")
+        etiqueta = "CEDEAR/Alpaca" if es_cedear else "Merval/IOL"
+        if args.dolarizar and not es_cedear:
+            etiqueta += ", dolarizado CCL"
+        logger.info(f"── {symbol} ({etiqueta}) ──")
 
         try:
             if es_cedear:
                 bars = alpaca.get_bars_diarias(symbol, desde=args.desde, hasta=args.hasta)
             else:
                 bars = fetch_bars_merval(iol, symbol, args.desde, args.hasta)
-        except NotImplementedError as e:
-            logger.error(f"  {e}")
-            continue
+                if args.dolarizar:
+                    if not ccl_dict:
+                        logger.warning(f"  {symbol}: saltado — sin CCL histórico disponible")
+                        continue
+                    bars_antes = len(bars)
+                    bars = cclh.dolarizar_bars(bars, ccl_dict)
+                    logger.info(f"  {symbol}: dolarizado {bars_antes} → {len(bars)} velas (descarta días previos al primer CCL)")
         except Exception as e:
             logger.error(f"  Error trayendo datos de {symbol}: {e}")
             continue
@@ -162,18 +147,17 @@ def main():
         filas_metricas.append(be.calcular_metricas(symbol, trades))
 
     if len(filas_resultados) > 1:
-        sh.limpiar_y_escribir("Backtest_Resultados", filas_resultados)
-        logger.info(f"✅ Backtest_Resultados: {len(filas_resultados) - 1} trades subidos")
+        sh.limpiar_y_escribir(sheet_resultados, filas_resultados)
+        logger.info(f"✅ {sheet_resultados}: {len(filas_resultados) - 1} trades subidos")
     else:
-        logger.warning("⚠️ Sin trades en ningún símbolo — no se sube Backtest_Resultados")
+        logger.warning(f"⚠️ Sin trades en ningún símbolo — no se sube {sheet_resultados}")
 
     if len(filas_metricas) > 1:
-        sh.limpiar_y_escribir("Backtest_Metricas", filas_metricas)
-        logger.info(f"✅ Backtest_Metricas: {len(filas_metricas) - 1} símbolos subidos")
+        sh.limpiar_y_escribir(sheet_metricas, filas_metricas)
+        logger.info(f"✅ {sheet_metricas}: {len(filas_metricas) - 1} símbolos subidos")
 
     logger.info("✅ Backtest finalizado")
 
 
 if __name__ == "__main__":
     main()
-      
