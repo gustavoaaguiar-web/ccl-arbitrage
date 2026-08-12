@@ -1,0 +1,47 @@
+name: GG Analizar Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      desde:
+        description: 'Fecha inicio YYYY-MM-DD (mismo rango usado en el backtest)'
+        required: true
+        default: '2023-01-01'
+      hasta:
+        description: 'Fecha fin YYYY-MM-DD (mismo rango usado en el backtest)'
+        required: true
+        default: '2024-08-01'
+
+jobs:
+  analizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            requests \
+            numpy \
+            gspread \
+            google-auth \
+            pytz
+
+      - name: Run analysis
+        env:
+          IOL_USER:            ${{ secrets.IOL_USER }}
+          IOL_PASS:            ${{ secrets.IOL_PASS }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          ALPACA_KEY_ID:       ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET_KEY:   ${{ secrets.ALPACA_SECRET }}
+        run: |
+          python analizar_backtest.py --desde "${{ github.event.inputs.desde }}" --hasta "${{ github.event.inputs.hasta }}"
