@@ -128,11 +128,20 @@ class AlpacaClient:
             )
 
         params = {
-            "symbols":   ",".join(symbols),
-            "timeframe": timeframe,
-            "start":     start,
-            "limit":     limit,
-            "feed":      "iex",
+            "symbols":    ",".join(symbols),
+            "timeframe":  timeframe,
+            "start":      start,
+            "limit":      limit,
+            "feed":       "iex",
+            # "split": ajusta precios históricos por splits (ej. NVDA 10:1
+            # el 7-jun-2024) para que no aparezcan saltos de precio
+            # artificiales en la serie. Sin esto, cualquier símbolo con
+            # split dentro del rango rompe los indicadores técnicos (HMA,
+            # SMI) y las métricas de R alrededor de esa fecha. Se usa
+            # "split" y no "all" para no mezclar ajuste por dividendos
+            # (retorno total) con los precios de entry/stop/target, que
+            # deben reflejar niveles realmente operables.
+            "adjustment": "split",
         }
         if hasta:
             params["end"] = f"{hasta}T23:59:59Z"
