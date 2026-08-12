@@ -10,6 +10,9 @@ Hojas:
 - Simulador_Estado     → efectivo y contador (persiste entre reinicios)
 - Backtest_Resultados  → trades individuales del backtest (Ruta A)
 - Backtest_Metricas    → métricas agregadas por símbolo del backtest
+- Backtest_Resultados_USD / Backtest_Metricas_USD → mismas 2 de arriba,
+  pero con Merval dolarizado vía CCL (ver ccl_historico.py), en pestañas
+  separadas para comparar sin pisar los resultados nominales en pesos.
 
 NOTA DE TRANSICIÓN (jun-2026):
 Las hojas CCL_Historial y HMM_Historial del sistema de arbitraje anterior
@@ -65,6 +68,20 @@ HEADERS = {
                              "R Total", "Profit Factor", "Max DD (R)",
                              "Mejor Trade R", "Peor Trade R",
                              "Días Prom en Trade"],
+    # Variantes dolarizadas (CCL) del backtest de Merval — mismo schema que
+    # las de arriba, en pestañas separadas para no pisar los resultados
+    # nominales en pesos y poder comparar ambos lado a lado. Ver
+    # ccl_historico.py y run_backtest.py --dolarizar.
+    "Backtest_Resultados_USD": ["Symbol", "Regimen", "Fecha Entry", "Fecha Salida",
+                                 "Entry", "Stop", "T1", "T2", "T3",
+                                 "Precio Salida Final", "Días", "Motivo Salida",
+                                 "R Realizado", "Score", "ATR%",
+                                 "T1 cerrada", "T2 cerrada", "T3 cerrada",
+                                 "Precio T1", "Precio T2", "Precio T3"],
+    "Backtest_Metricas_USD":   ["Symbol", "Trades", "Win Rate %", "R Promedio",
+                                 "R Total", "Profit Factor", "Max DD (R)",
+                                 "Mejor Trade R", "Peor Trade R",
+                                 "Días Prom en Trade"],
 }
 
 
