@@ -15,6 +15,11 @@ on:
         description: 'Fecha fin YYYY-MM-DD'
         required: false
         default: '2024-02-01'
+      dolarizar:
+        description: 'Dolarizar Merval vÃ­a CCL antes de backtestear (no afecta CEDEARs)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   backtest:
@@ -49,8 +54,11 @@ jobs:
           ALPACA_KEY_ID:     ${{ secrets.ALPACA_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET }}
         run: |
-          if [ -z "${{ github.event.inputs.solo }}" ]; then
-            python run_backtest.py --desde "${{ github.event.inputs.desde }}" --hasta "${{ github.event.inputs.hasta }}"
-          else
-            python run_backtest.py --solo "${{ github.event.inputs.solo }}" --desde "${{ github.event.inputs.desde }}" --hasta "${{ github.event.inputs.hasta }}"
+          ARGS="--desde ${{ github.event.inputs.desde }} --hasta ${{ github.event.inputs.hasta }}"
+          if [ -n "${{ github.event.inputs.solo }}" ]; then
+            ARGS="$ARGS --solo ${{ github.event.inputs.solo }}"
           fi
+          if [ "${{ github.event.inputs.dolarizar }}" = "true" ]; then
+            ARGS="$ARGS --dolarizar"
+          fi
+          python run_backtest.py $ARGS
