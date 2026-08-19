@@ -202,6 +202,32 @@ class IOLClient:
         # if data:
         #     logger.info(f"DEBUG {symbol} primer registro crudo: {data[0]}")
 
+        # Dedup por fecha: se detectó (13-ago-2026, ver diagnostico_
+        # granularidad_v2.py) que ciertas fechas puntuales (ej. GGAL
+        # 2022-05-16/17) traen miles de registros casi idénticos —mismo
+        # ultimoPrecio, timestamps a centésimas de segundo entre 16:59 y
+        # 17:00— que parecen un glitch puntual de la fuente de IOL en vez
+        # de granularidad intradía real (el precio no se mueve entre
+        # registros). Se queda 1 registro por fecha: el de fechaHora más
+        # alta (el más cercano al cierre real de rueda), que es la
+        # representación más confiable del cierre del día.
+        por_fecha = {}
+        for d in data:
+            fecha = d.get("fechaHora")
+            if fecha is None:
+                continue
+            fecha_dia = str(fecha)[:10]
+            actual = por_fecha.get(fecha_dia)
+            if actual is None or fecha > actual.get("fechaHora", ""):
+                por_fecha[fecha_dia] = d
+        if len(por_fecha) < len(data):
+            descartados = len(data) - len(por_fecha)
+            logger.warning(
+                f"get_historico_diario({symbol}): {descartados} registros duplicados "
+                f"descartados ({len(data)} crudos -> {len(por_fecha)} días únicos)"
+            )
+        data = list(por_fecha.values())
+
         bars = []
         for d in data:
             fecha = d.get("fechaHora")
@@ -251,5 +277,4 @@ class IOLClient:
             "ok":    True,
             "msg":   "Conexión exitosa a IOL",
             "sample": quote,
-    }
-            
+        }
