@@ -1,0 +1,30 @@
+name: GG Diagnostico Granularidad v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run diagnostico v2
+        env:
+          IOL_USER: ${{ secrets.IOL_USER }}
+          IOL_PASS: ${{ secrets.IOL_PASS }}
+        run: |
+          python diagnostico_granularidad_v2.py
