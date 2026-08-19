@@ -33,6 +33,13 @@ UTC) eso corre los horarios de mercado ~3hs — ej. a las 14:00 ART
 (mercado abierto) el runner ve las 17:00 UTC y puede_comprar() devolvía
 False de más, o debe_cerrar_forzado() disparaba un cierre forzado 3hs
 antes de tiempo. Se corrigió usando datetime.now(TZ_ARG) como default.
+
+FIX (19-ago-2026): Posicion no guardaba el régimen (BAJA/MEDIA/ALTA/
+MUY_ALTA) con el que se abrió la posición. Sin eso, no había forma de
+saber qué período de HMA usar para el trailing stop del 20% remanente
+tras T2 — signal_engine.REGIMENES[regimen]["hma_rapida"] depende de
+saber en qué régimen se generó la señal original. Se agrega el campo,
+threadeado desde signal_engine.Senal.regimen vía abrir_posicion().
 """
 
 from dataclasses import dataclass, field
@@ -95,6 +102,9 @@ class Posicion:
     id:                 str
     symbol:             str
     score:              float
+    regimen:            str     # BAJA/MEDIA/ALTA/MUY_ALTA — necesario para
+                                 # saber qué período de HMA usar en el
+                                 # trailing stop del remanente post-T2
     cantidad_inicial:   float
     cantidad_restante:  float
     precio_entry:       float
@@ -236,6 +246,7 @@ class Simulador:
         self,
         symbol: str,
         score: float,
+        regimen: str,
         precio_entry: float,
         precio_stop: float,
         precio_t1: float,
@@ -262,6 +273,7 @@ class Simulador:
             id=f"P{self._op_counter:04d}",
             symbol=symbol,
             score=score,
+            regimen=regimen,
             cantidad_inicial=cantidad,
             cantidad_restante=cantidad,
             precio_entry=precio_entry,
@@ -280,7 +292,7 @@ class Simulador:
 
         logger.info(
             f"🟢 ENTRADA {symbol}: {cantidad:.2f} u. @ ${precio_entry:.2f} | "
-            f"score={score:.0f} | riesgo={riesgo_pct*100:.1f}% | "
+            f"score={score:.0f} regimen={regimen} | riesgo={riesgo_pct*100:.1f}% | "
             f"stop=${precio_stop:.2f} T1=${precio_t1:.2f} T2=${precio_t2:.2f} T3=${precio_t3:.2f}"
         )
         return pos
@@ -484,5 +496,4 @@ class Simulador:
             r["operaciones_total"],
             round(r["win_rate"], 2),
             r["posiciones_abiertas"],
-          ]
-          
+        ]
