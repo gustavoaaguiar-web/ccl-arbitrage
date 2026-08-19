@@ -171,14 +171,12 @@ class IOLClient:
         agnóstico a la fuente:
             [{"t": "2024-01-02T00:00:00", "o": .., "h": .., "l": .., "c": .., "v": ..}, ...]
 
-        ⚠️ Los nombres de campo del JSON de respuesta (fechaHora, apertura,
-        maximo, minimo, ultimoPrecio, volumen) están tomados del resto de
-        este cliente (get_quote/get_panel usan esos mismos nombres para los
-        campos análogos) pero no fueron confirmados contra un request real
-        a este endpoint específico. Antes de confiar en el backtest,
-        correr una vez con --solo <un símbolo Merval> y loguear/inspeccionar
-        el primer registro crudo (ver bloque comentado más abajo) para
-        verificar que los nombres coinciden.
+        ⚠️ Nombres de campo confirmados contra un request real a este
+        endpoint (13-ago-2026, ver diagnostico_granularidad.py): fechaHora,
+        apertura, maximo, minimo, ultimoPrecio, volumenNominal (¡no
+        "volumen"! — bug detectado y corregido en esta misma revisión).
+        Granularidad confirmada 1 registro/día hábil, sin duplicados, para
+        rangos chicos (probado con 2 semanas de enero 2020).
         """
         self._ensure_token()
         try:
@@ -211,7 +209,7 @@ class IOLClient:
             maximo = d.get("maximo")
             minimo = d.get("minimo")
             cierre = d.get("ultimoPrecio")
-            volumen = d.get("volumen")
+            volumen = d.get("volumenNominal")
 
             # Descarta registros incompletos (feriados/datos faltantes) sin
             # romper el resto del histórico — mismo criterio de resiliencia
@@ -253,4 +251,5 @@ class IOLClient:
             "ok":    True,
             "msg":   "Conexión exitosa a IOL",
             "sample": quote,
-        }
+    }
+            
