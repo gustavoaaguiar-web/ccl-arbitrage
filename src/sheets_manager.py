@@ -8,6 +8,13 @@ Hojas:
 - Estado_Cartera       → snapshots del capital total
 - Posiciones_Abiertas  → posiciones abiertas (persiste entre reinicios)
 - Simulador_Estado     → efectivo y contador (persiste entre reinicios)
+- Historico_Diario_Cache → cache de velas diarias (Merval vía IOL, CEDEARs
+  vía Alpaca) para que trader_job.py no tenga que pedirle historia
+  completa a IOL/Alpaca en cada ciclo de 5 min — se refresca 1 vez por
+  día (ver alertas.py) y la vela de "hoy" se arma aparte, sin gastar
+  requests extra: para Merval a partir de Historico_Merval_Raw (que ya
+  se acumula cada ciclo), para CEDEARs vía el dailyBar del snapshot de
+  Alpaca (1 solo request para todo el universo).
 - Backtest_Resultados  → trades individuales del backtest (Ruta A)
 - Backtest_Metricas    → métricas agregadas por símbolo del backtest
 - Backtest_Resultados_USD / Backtest_Metricas_USD → mismas 2 de arriba,
@@ -28,7 +35,7 @@ cantidad_inicial), acorde a la nueva clase Posicion de simulator.py.
 """
 
 import logging
-from typing import List
+from typing import List, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -51,13 +58,15 @@ HEADERS = {
     "Estado_Cartera": ["timestamp", "capital_total", "efectivo", "en_posiciones",
                        "pnl_total", "pnl_pct", "operaciones_total", "win_rate",
                        "posiciones_abiertas"],
-    "Posiciones_Abiertas": ["id", "symbol", "score", "cantidad_inicial",
+    "Posiciones_Abiertas": ["id", "symbol", "score", "regimen", "cantidad_inicial",
                              "cantidad_restante", "precio_entry", "monto_entry",
                              "precio_stop", "precio_t1", "precio_t2", "precio_t3",
                              "riesgo_pct", "ts_entry", "t1_alcanzado", "t2_alcanzado",
                              "stop_en_breakeven", "cantidad_cerrada_t1",
                              "cantidad_cerrada_t2"],
     "Simulador_Estado": ["efectivo", "op_counter"],
+    "Historico_Diario_Cache": ["symbol", "fecha", "apertura", "maximo", "minimo",
+                                "cierre", "volumen"],
     "Backtest_Resultados": ["Symbol", "Regimen", "Fecha Entry", "Fecha Salida",
                              "Entry", "Stop", "T1", "T2", "T3",
                              "Precio Salida Final", "Días", "Motivo Salida",
@@ -242,6 +251,7 @@ class SheetsManager:
             filas.append([
                 pos.id, sym,
                 round(pos.score, 2),
+                pos.regimen,
                 round(pos.cantidad_inicial, 6),
                 round(pos.cantidad_restante, 6),
                 round(pos.precio_entry, 4),
@@ -274,7 +284,7 @@ class SheetsManager:
         ids_vistos = set()
         for fila in filas[1:]:
             try:
-                if len(fila) < 18:
+                if len(fila) < 19:
                     logger.warning(f"Fila de Posiciones_Abiertas con columnas insuficientes, saltada: {fila}")
                     continue
                 pos_id = fila[0]
@@ -287,22 +297,23 @@ class SheetsManager:
                     id=pos_id,
                     symbol=symbol,
                     score=_f(fila[2]),
-                    cantidad_inicial=_f(fila[3]),
-                    cantidad_restante=_f(fila[4]),
-                    precio_entry=_f(fila[5]),
-                    monto_entry=_f(fila[6]),
-                    precio_stop=_f(fila[7]),
-                    precio_t1=_f(fila[8]),
-                    precio_t2=_f(fila[9]),
-                    precio_t3=_f(fila[10]),
-                    riesgo_pct=_f(fila[11]),
-                    ts_entry=fila[12],
-                    precio_actual=_f(fila[5]),
-                    t1_alcanzado=_b(fila[13]),
-                    t2_alcanzado=_b(fila[14]),
-                    stop_en_breakeven=_b(fila[15]),
-                    cantidad_cerrada_t1=_f(fila[16]),
-                    cantidad_cerrada_t2=_f(fila[17]),
+                    regimen=fila[3],
+                    cantidad_inicial=_f(fila[4]),
+                    cantidad_restante=_f(fila[5]),
+                    precio_entry=_f(fila[6]),
+                    monto_entry=_f(fila[7]),
+                    precio_stop=_f(fila[8]),
+                    precio_t1=_f(fila[9]),
+                    precio_t2=_f(fila[10]),
+                    precio_t3=_f(fila[11]),
+                    riesgo_pct=_f(fila[12]),
+                    ts_entry=fila[13],
+                    precio_actual=_f(fila[6]),
+                    t1_alcanzado=_b(fila[14]),
+                    t2_alcanzado=_b(fila[15]),
+                    stop_en_breakeven=_b(fila[16]),
+                    cantidad_cerrada_t1=_f(fila[17]),
+                    cantidad_cerrada_t2=_f(fila[18]),
                 )
                 simulador.posiciones[symbol] = pos
             except Exception as e:
@@ -334,6 +345,70 @@ class SheetsManager:
             logger.info(f"✅ Estado simulador cargado: efectivo=${simulador.efectivo:,.0f} ops={simulador._op_counter}")
         except Exception as e:
             logger.warning(f"Error cargando estado simulador: {e}")
+
+    # ─────────────── HISTÓRICO DIARIO CACHE (alertas.py) ─
+
+    def guardar_historico_diario_cache(self, symbol: str, bars: list):
+        """
+        Sobreescribe el cache de un símbolo (borra sus filas viejas y
+        escribe las nuevas). No usa limpiar_y_escribir() porque esa
+        función pisa TODA la hoja — acá conviven varios símbolos, así
+        que se filtra y reconstruye solo lo de este símbolo.
+
+        bars: lista de dicts {t, o, h, l, c, v} (mismo shape que
+        iol_client.get_historico_diario / alpaca_client.get_bars_diarias).
+        """
+        ws = self._hojas.get("Historico_Diario_Cache")
+        if not ws or not bars:
+            return
+
+        valores = ws.get_all_values()
+        filas_otros_symbols = [
+            fila for fila in valores[1:] if len(fila) > 0 and fila[0] != symbol
+        ] if len(valores) > 1 else []
+
+        filas_nuevas = [
+            [symbol, b["t"][:10], round(b["o"], 4), round(b["h"], 4),
+             round(b["l"], 4), round(b["c"], 4), round(b["v"], 2)]
+            for b in bars
+        ]
+
+        todas = [HEADERS["Historico_Diario_Cache"]] + filas_otros_symbols + filas_nuevas
+        ws.clear()
+        ws.update(range_name="A1", values=todas)
+        logger.info(f"✅ Historico_Diario_Cache[{symbol}]: {len(filas_nuevas)} velas guardadas")
+
+    def cargar_historico_diario_cache(self, symbol: str) -> List[dict]:
+        """Carga el cache de un símbolo, ordenado ascendente por fecha."""
+        ws = self._hojas.get("Historico_Diario_Cache")
+        if not ws:
+            return []
+        valores = ws.get_all_values()
+        if len(valores) < 2:
+            return []
+
+        resultado = []
+        for fila in valores[1:]:
+            try:
+                if len(fila) < 7 or fila[0] != symbol:
+                    continue
+                resultado.append({
+                    "t": fila[1],
+                    "o": _f(fila[2]),
+                    "h": _f(fila[3]),
+                    "l": _f(fila[4]),
+                    "c": _f(fila[5]),
+                    "v": _f(fila[6]),
+                })
+            except (ValueError, TypeError, IndexError):
+                continue
+        resultado.sort(key=lambda b: b["t"])
+        return resultado
+
+    def fecha_mas_reciente_cache(self, symbol: str) -> Optional[str]:
+        """Última fecha (YYYY-MM-DD) cacheada para un símbolo, o None."""
+        bars = self.cargar_historico_diario_cache(symbol)
+        return bars[-1]["t"][:10] if bars else None
 
     # ─────────────── BACKTEST ────────────────────────────
 
