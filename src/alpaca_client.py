@@ -146,39 +146,71 @@ class AlpacaClient:
         if hasta:
             params["end"] = f"{hasta}T23:59:59Z"
 
-        try:
-            resp = requests.get(
-                f"{ALPACA_BASE_URL}/stocks/bars",
-                headers=self.headers,
-                params=params,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json().get("bars", {})
+        # Paginación: /v2/stocks/bars devuelve como máximo `limit` barras
+        # por página y un next_page_token si el rango pedido tiene más.
+        # Sin este loop, rangos largos (ej. 2020-2024, ~1150 días hábiles)
+        # quedaban truncados silenciosamente a las primeras `limit` barras
+        # — se detectó (19-ago-2026) porque varios símbolos daban
+        # exactamente 1000 velas para un rango que debía dar ~1150.
+        result: Dict[str, List[dict]] = {}
+        page_token = None
+        max_paginas = 20  # tope de seguridad, no debería hacer falta en la práctica
+        paginas = 0
 
-            result = {}
-            for sym, bars in data.items():
+        try:
+            while True:
+                req_params = dict(params)
+                if page_token:
+                    req_params["page_token"] = page_token
+
+                resp = requests.get(
+                    f"{ALPACA_BASE_URL}/stocks/bars",
+                    headers=self.headers,
+                    params=req_params,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                data = payload.get("bars", {})
+
+                for sym, bars in data.items():
+                    normalizados = [
+                        {
+                            "t": b.get("t", ""),
+                            "o": float(b.get("o", 0)),
+                            "h": float(b.get("h", 0)),
+                            "l": float(b.get("l", 0)),
+                            "c": float(b.get("c", 0)),
+                            "v": float(b.get("v", 0)),
+                        }
+                        for b in bars
+                    ]
+                    result.setdefault(sym, []).extend(normalizados)
+
+                paginas += 1
+                page_token = payload.get("next_page_token")
+                if not page_token or paginas >= max_paginas:
+                    if paginas >= max_paginas and page_token:
+                        logger.warning(
+                            f"Alpaca bars: se alcanzó el tope de {max_paginas} páginas "
+                            f"con más datos pendientes (next_page_token presente) — "
+                            f"posible truncamiento residual."
+                        )
+                    break
+
+            # Filtra símbolos con muy pocas barras (mismo criterio que antes)
+            result_final = {}
+            for sym, bars in result.items():
                 if len(bars) < 5:
                     logger.warning(f"Alpaca: {sym} solo tiene {len(bars)} barras — ignorado")
                     continue
-                # Normalizar a dicts con claves consistentes
-                result[sym] = [
-                    {
-                        "t": b.get("t", ""),
-                        "o": float(b.get("o", 0)),
-                        "h": float(b.get("h", 0)),
-                        "l": float(b.get("l", 0)),
-                        "c": float(b.get("c", 0)),
-                        "v": float(b.get("v", 0)),
-                    }
-                    for b in bars
-                ]
+                result_final[sym] = bars
 
             logger.info(
-                f"Alpaca bars ({timeframe}): "
-                f"{', '.join(f'{s}={len(v)}bars' for s, v in result.items())}"
+                f"Alpaca bars ({timeframe}, {paginas} página(s)): "
+                f"{', '.join(f'{s}={len(v)}bars' for s, v in result_final.items())}"
             )
-            return result
+            return result_final
 
         except requests.RequestException as e:
             logger.error(f"Error Alpaca bars ({timeframe}): {e}")
