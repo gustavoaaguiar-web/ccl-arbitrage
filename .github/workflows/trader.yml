@@ -124,12 +124,15 @@ jobs:
             numpy \
             gspread \
             google-auth \
-            pytz
+            pytz \
+            yfinance
 
       - name: Run trader job
         env:
           IOL_USER:            ${{ secrets.IOL_USER }}
           IOL_PASS:            ${{ secrets.IOL_PASS }}
+          ALPACA_KEY:          ${{ secrets.ALPACA_KEY }}
+          ALPACA_SECRET:       ${{ secrets.ALPACA_SECRET }}
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           GMAIL_USER:          ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASS:      ${{ secrets.GMAIL_APP_PASS }}
