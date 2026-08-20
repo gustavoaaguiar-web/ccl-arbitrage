@@ -4,7 +4,8 @@ GG Swing — Dashboard Streamlit (solo lectura + venta manual)
 Visualización en tiempo real del Sistema GG Swing.
 
 RESPONSABILIDADES DE ESTE ARCHIVO:
-  - Mostrar precios en vivo del universo de 20 activos (Merval + CEDEARs, vía IOL)
+  - Mostrar precios en vivo del universo de 19 activos (8 Merval vía IOL
+    en ARS, 11 CEDEARs vía Alpaca en USD — ver FIX 20-ago-2026)
   - Mostrar posiciones abiertas y KPIs del simulador
   - Mostrar historial de operaciones
   - Permitir venta manual de posiciones (única escritura)
@@ -15,20 +16,22 @@ Streamlit puede dormir sin consecuencias: el GHA opera igual.
 NOTA DE TRANSICIÓN (jun-2026):
 Este archivo reemplaza la versión anterior (GG HMM-CCL Trader), que
 calculaba desvíos CCL y clima de mercado vía HMM sobre datos de Alpaca.
-El Sistema GG Swing pivotó a análisis técnico (HMA-D + SMI + scoring)
-sobre precio ARS directo. Esta versión del dashboard todavía NO muestra
-señales/score — eso depende de signal_engine.py, aún no construido.
-Por ahora solo expone precios en vivo, posiciones, KPIs e historial.
+El Sistema GG Swing pivotó a análisis técnico (HMA-D + SMI + scoring).
 
-NO USA ALPACA — el panel de precios funciona enteramente con IOL
-(get_panel("MerVal") + get_panel("CEDEARs")), igual que trader_job.py.
+FIX (13/jul/2026): VALO se sacó del universo por completo. Universo
+queda en 19 activos, mismo criterio que signal_engine.py/trader_job.py.
 
-FIX (13/jul/2026): VALO se sacó del universo por completo. No cotiza en
-el panel Merval de IOL (siempre mostraba precio en blanco ahí) ni está
-cedearizado en el panel CEDEARs de IOL tampoco (mismo problema del otro
-lado). Sin fuente ARS confiable para mostrarlo/operarlo en este sistema
-— universo queda en 19 activos. Mismo criterio aplicado en
-signal_engine.py y trader_job.py.
+FIX (20-ago-2026) — mismatch de moneda en CEDEARs:
+La versión anterior traía precios de CEDEARs vía iol.get_panel("CEDEARs")
+(precio del CEDEAR en ARS). Pero desde que signal_engine.py + alertas.py
+están conectados en vivo, las posiciones de CEDEARs se abren con
+entry/stop/T1/T2 calculados sobre datos de Alpaca (el ADR en NYSE, en
+USD) — no sobre el CEDEAR en pesos. Mostrar el precio ARS del CEDEAR
+junto a niveles en USD generaba un PnL sin sentido en pantalla (mezcla
+de escalas/monedas). Se corrige trayendo el precio de CEDEARs desde
+Alpaca (mismo origen que usó la señal), dejando IOL solo para los 8
+Merval. Requiere ALPACA_KEY / ALPACA_SECRET en Streamlit Secrets
+(mismos valores que ya están en los GitHub Secrets del repo).
 """
 
 import time
@@ -49,6 +52,7 @@ def hora_argentina():
 
 
 from iol_client import IOLClient
+from alpaca_client import AlpacaClient
 from simulator import Simulador
 from sheets_manager import SheetsManager
 
@@ -76,9 +80,11 @@ UNIVERSO = MERVAL_SET | CEDEARS_SET
 def get_secrets():
     try:
         return {
-            "iol_user": st.secrets["IOL_USER"],
-            "iol_pass": st.secrets["IOL_PASS"],
-            "gcp":      json.loads(st.secrets["GCP_SERVICE_ACCOUNT"]),
+            "iol_user":     st.secrets["IOL_USER"],
+            "iol_pass":     st.secrets["IOL_PASS"],
+            "alpaca_key":   st.secrets["ALPACA_KEY"],
+            "alpaca_sec":   st.secrets["ALPACA_SECRET"],
+            "gcp":          json.loads(st.secrets["GCP_SERVICE_ACCOUNT"]),
         }
     except Exception:
         return None
@@ -92,6 +98,8 @@ def init_state():
     if "ready" not in st.session_state:
         st.session_state.iol = IOLClient(s["iol_user"], s["iol_pass"])
         st.session_state.iol.login()
+
+        st.session_state.alpaca = AlpacaClient(s["alpaca_key"], s["alpaca_sec"])
 
         sh = SheetsManager(s["gcp"])
         sh.conectar()
@@ -107,42 +115,62 @@ def init_state():
     return True
 
 
-# ── FETCH PRECIOS (solo display, vía IOL) ─────────────────
+# ── FETCH PRECIOS ──────────────────────────────────────────
 def fetch_precios():
     """
-    Trae precios ARS en vivo del universo de 20 activos.
-    Mismo patrón que trader_job.py: 2 requests (get_panel x2), sin
-    pedir cotización individual por símbolo (evita romper rate limit).
+    Trae precios en vivo del universo de 19 activos:
+      - Merval (8): vía IOL, en ARS — 1 request (get_panel).
+      - CEDEARs (11): vía Alpaca, en USD — 1 request (get_snapshots).
+        Mismo origen de datos que usó signal_engine.py para calcular
+        entry/stop/T1/T2 de esas posiciones (ver FIX 20-ago-2026).
+
+    Retorna {symbol: {"precio": float, "moneda": "ARS"|"USD"}}.
     """
     iol = st.session_state.iol
+    alpaca = st.session_state.alpaca
     precios = {}
 
     try:
         data = iol.get_panel("MerVal")
         for t in data:
             if t["simbolo"] in MERVAL_SET:
-                precios[t["simbolo"]] = t.get("ultimoPrecio", 0)
+                precios[t["simbolo"]] = {"precio": t.get("ultimoPrecio", 0), "moneda": "ARS"}
     except Exception as e:
         st.warning(f"IOL MerVal: {e}")
 
     try:
-        data = iol.get_panel("CEDEARs")
-        for t in data:
-            if t["simbolo"] in CEDEARS_SET:
-                precios[t["simbolo"]] = t.get("ultimoPrecio", 0)
+        snaps = alpaca.get_snapshots(list(CEDEARS_SET))
+        for sym, snap in snaps.items():
+            if sym in CEDEARS_SET and snap.get("last"):
+                precios[sym] = {"precio": snap["last"], "moneda": "USD"}
     except Exception as e:
-        st.warning(f"IOL CEDEARs: {e}")
+        st.warning(f"Alpaca CEDEARs: {e}")
 
     return precios
+
+
+def _precio_num(precios: dict, symbol: str) -> float:
+    """Extrae el precio numérico de un símbolo (0 si no hay dato)."""
+    return precios.get(symbol, {}).get("precio", 0) or 0
+
+
+def _precio_fmt(precios: dict, symbol: str) -> str:
+    """Formatea el precio con símbolo de moneda correcto (ARS $ / USD u$s)."""
+    info = precios.get(symbol)
+    if not info or not info.get("precio"):
+        return "—"
+    simbolo = "u$s" if info["moneda"] == "USD" else "$"
+    return f"{simbolo}{info['precio']:,.2f}"
 
 
 # ── MAIN ──────────────────────────────────────────────────
 def main():
     st.title("GG Investments 📊🦅")
-    st.caption("IOL (ARS) | Dashboard — operado por GitHub Actions")
+    st.caption("IOL (ARS) + Alpaca (USD) | Dashboard — operado por GitHub Actions")
 
     if not init_state():
-        st.error("⚠️ Configurar credenciales en Streamlit Secrets (IOL_USER, IOL_PASS, GCP_SERVICE_ACCOUNT).")
+        st.error("⚠️ Configurar credenciales en Streamlit Secrets "
+                  "(IOL_USER, IOL_PASS, ALPACA_KEY, ALPACA_SECRET, GCP_SERVICE_ACCOUNT).")
         return
 
     sheets = st.session_state.sheets
@@ -174,15 +202,20 @@ def main():
 
     sim = st.session_state.sim
     precios = st.session_state.get("precios", {})
+    precios_num = {sym: _precio_num(precios, sym) for sym in UNIVERSO}
 
     with col_info:
         ts_str = st.session_state.ultimo_refresh.strftime("%H:%M:%S") if st.session_state.ultimo_refresh else "—"
         st.caption(f"Última actualización: {ts_str} ART | próxima automática en ~{REFRESH_SECONDS // 60} min")
 
     # ── KPIs ──────────────────────────────────────────────
-    resumen = sim.resumen(precios)
+    # NOTA: capital_total mezcla ARS (Merval + efectivo) y USD (CEDEARs)
+    # sin convertir — mismo criterio que el simulador en producción, que
+    # tampoco dolariza el capital. Los KPIs son una aproximación cuando
+    # hay posiciones CEDEAR abiertas, no un total consolidado real.
+    resumen = sim.resumen(precios_num)
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Capital Total", f"${resumen['capital_total']:,.0f}", f"{resumen['pnl_pct']:+.2f}%")
+    c1.metric("Capital Total (aprox.)", f"${resumen['capital_total']:,.0f}", f"{resumen['pnl_pct']:+.2f}%")
     c2.metric("Efectivo", f"${resumen['efectivo']:,.0f}")
     c3.metric("En Posiciones", f"${resumen['en_posiciones']:,.0f}")
     c4.metric("Win Rate", f"{resumen['win_rate']:.0f}%", f"{resumen['operaciones_total']} ops")
@@ -198,8 +231,7 @@ def main():
     else:
         st.success(f"🟢 Mercado abierto | {resumen['posiciones_abiertas']} posiciones abiertas")
 
-    st.info("🤖 **Sistema operado por GitHub Actions** — esta pantalla es solo visualización. "
-            "Las señales de entrada (score, HMA, SMI) todavía no están integradas aquí.")
+    st.info("🤖 **Sistema operado por GitHub Actions** — esta pantalla es solo visualización.")
 
     # ── Tabla de precios en vivo ───────────────────────────
     st.subheader("📋 Precios en Vivo — Universo de 19 activos")
@@ -211,7 +243,7 @@ def main():
             filas.append({
                 "Activo": sym,
                 "Mercado": mercado,
-                "Precio ARS": f"${precios.get(sym, 0):,.2f}" if precios.get(sym) else "—",
+                "Precio": _precio_fmt(precios, sym),
                 "Posición abierta": "🟢 Sí" if tiene_pos else "—",
             })
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
@@ -222,7 +254,8 @@ def main():
     if sim.posiciones:
         st.subheader("💼 Posiciones Abiertas")
         for sym, pos in sim.posiciones.items():
-            precio_actual = precios.get(sym, pos.precio_actual or pos.precio_entry)
+            moneda = "u$s" if sym in CEDEARS_SET else "$"
+            precio_actual = precios_num.get(sym) or pos.precio_actual or pos.precio_entry
             pnl = (precio_actual - pos.precio_entry) * pos.cantidad_restante
             pnl_pct = ((precio_actual / pos.precio_entry) - 1) * 100 if pos.precio_entry else 0
             emoji = "✅" if pnl >= 0 else "🔻"
@@ -237,20 +270,20 @@ def main():
             estado_str = " | ".join(estado_partes) if estado_partes else "Sin targets alcanzados"
 
             with st.expander(
-                f"{emoji} {pos.id} — {sym} | PnL: ${pnl:+,.0f} ({pnl_pct:+.2f}%) | {estado_str}",
+                f"{emoji} {pos.id} — {sym} | PnL: {moneda}{pnl:+,.0f} ({pnl_pct:+.2f}%) | {estado_str}",
                 expanded=True
             ):
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Entrada", f"${pos.precio_entry:,.2f}")
-                c2.metric("Actual", f"${precio_actual:,.2f}", f"{pnl_pct:+.2f}%")
+                c1.metric("Entrada", f"{moneda}{pos.precio_entry:,.2f}")
+                c2.metric("Actual", f"{moneda}{precio_actual:,.2f}", f"{pnl_pct:+.2f}%")
                 c3.metric("Restante", f"{pos.cantidad_restante:.2f} u.")
-                c4.metric("Score", f"{pos.score:.0f}")
+                c4.metric("Score", f"{pos.score:.0f} ({pos.regimen})")
 
                 c5, c6, c7, c8 = st.columns(4)
-                c5.metric("Stop", f"${pos.precio_stop:,.2f}")
-                c6.metric("Target 1", f"${pos.precio_t1:,.2f}")
-                c7.metric("Target 2", f"${pos.precio_t2:,.2f}")
-                c8.metric("Target 3", f"${pos.precio_t3:,.2f}")
+                c5.metric("Stop", f"{moneda}{pos.precio_stop:,.2f}")
+                c6.metric("Target 1", f"{moneda}{pos.precio_t1:,.2f}")
+                c7.metric("Target 2", f"{moneda}{pos.precio_t2:,.2f}")
+                c8.metric("Target 3", f"{moneda}{pos.precio_t3:,.2f}")
 
                 btn_key = f"v_manual_{pos.id}_{sym}"
                 if st.button(f"🔴 Vender {sym} ({pos.id}) — cierre total", key=btn_key, type="primary"):
