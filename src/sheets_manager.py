@@ -35,7 +35,7 @@ cantidad_inicial), acorde a la nueva clase Posicion de simulator.py.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -355,6 +355,13 @@ class SheetsManager:
         función pisa TODA la hoja — acá conviven varios símbolos, así
         que se filtra y reconstruye solo lo de este símbolo.
 
+        ⚠️ Hace 1 lectura (get_all_values) + 1 escritura por símbolo.
+        Para refrescar varios símbolos en el mismo ciclo, usar
+        guardar_historico_diario_cache_batch() en su lugar — evita el
+        problema real de cuota detectado el 21-ago-2026 (429 Quota
+        exceeded, ~2-3 lecturas completas por símbolo × 19 símbolos
+        superaba el límite de Sheets API en menos de 1 minuto).
+
         bars: lista de dicts {t, o, h, l, c, v} (mismo shape que
         iol_client.get_historico_diario / alpaca_client.get_bars_diarias).
         """
@@ -379,7 +386,13 @@ class SheetsManager:
         logger.info(f"✅ Historico_Diario_Cache[{symbol}]: {len(filas_nuevas)} velas guardadas")
 
     def cargar_historico_diario_cache(self, symbol: str) -> List[dict]:
-        """Carga el cache de un símbolo, ordenado ascendente por fecha."""
+        """
+        Carga el cache de UN símbolo, ordenado ascendente por fecha.
+        ⚠️ Lee la hoja completa (todos los símbolos) y filtra en memoria
+        — si necesitás el cache de varios símbolos en el mismo ciclo,
+        usar cargar_historico_diario_cache_completo() en su lugar (1
+        sola lectura para todo el universo, en vez de 1 por símbolo).
+        """
         ws = self._hojas.get("Historico_Diario_Cache")
         if not ws:
             return []
@@ -406,36 +419,61 @@ class SheetsManager:
         return resultado
 
     def fecha_mas_reciente_cache(self, symbol: str) -> Optional[str]:
-        """Última fecha (YYYY-MM-DD) cacheada para un símbolo, o None."""
+        """
+        Última fecha (YYYY-MM-DD) cacheada para un símbolo, o None.
+        ⚠️ Internamente hace una lectura completa de la hoja — evitar
+        llamarla en loop por símbolo (usar cargar_historico_diario_cache_completo()
+        y derivar la fecha en memoria en su lugar).
+        """
         bars = self.cargar_historico_diario_cache(symbol)
         return bars[-1]["t"][:10] if bars else None
 
-    # ─────────────── BACKTEST ────────────────────────────
-
-    def limpiar_y_escribir(self, nombre_hoja: str, filas: List[list]):
+    def cargar_historico_diario_cache_completo(self) -> Dict[str, List[dict]]:
         """
-        Reemplaza el contenido completo de una hoja con las filas dadas.
-        La primera fila de `filas` debe ser el encabezado.
-        Usado por run_backtest.py para subir resultados frescos en cada
-        ejecución sin acumular runs anteriores.
+        Carga TODO el cache (todos los símbolos) en 1 sola lectura —
+        pensado para usarse 1 vez por ciclo en trader_job.py/alertas.py
+        en vez de 1 lectura por símbolo (que fue la causa del 429 Quota
+        exceeded detectado el 21-ago-2026: ~19 símbolos × 2-3 lecturas
+        completas cada uno superaba el límite de requests/minuto de
+        Sheets API).
 
-        Si la hoja no existe en _hojas (por ejemplo Backtest_Resultados
-        creada en _inicializar_hojas), lanza KeyError con mensaje claro.
+        Retorna {symbol: [bars ordenados ascendente por fecha, ...]}.
         """
-        ws = self._hojas.get(nombre_hoja)
+        ws = self._hojas.get("Historico_Diario_Cache")
         if not ws:
-            raise KeyError(
-                f"Hoja '{nombre_hoja}' no encontrada. "
-                f"Hojas disponibles: {list(self._hojas.keys())}"
-            )
-        if not filas:
-            logger.warning(f"limpiar_y_escribir('{nombre_hoja}'): sin filas, no se escribe nada")
-            return
+            return {}
+        valores = ws.get_all_values()
+        if len(valores) < 2:
+            return {}
 
-        ws.clear()
-        # batch_update en un solo request para no agotar cuota de Sheets API
-        ws.update(
-            range_name="A1",
-            values=filas,
-        )
-        logger.info(f"✅ '{nombre_hoja}' actualizada: {len(filas) - 1} filas de datos")
+        por_symbol: Dict[str, List[dict]] = {}
+        for fila in valores[1:]:
+            try:
+                if len(fila) < 7:
+                    continue
+                symbol = fila[0]
+                por_symbol.setdefault(symbol, []).append({
+                    "t": fila[1],
+                    "o": _f(fila[2]),
+                    "h": _f(fila[3]),
+                    "l": _f(fila[4]),
+                    "c": _f(fila[5]),
+                    "v": _f(fila[6]),
+                })
+            except (ValueError, TypeError, IndexError):
+                continue
+
+        for symbol in por_symbol:
+            por_symbol[symbol].sort(key=lambda b: b["t"])
+        return por_symbol
+
+    def guardar_historico_diario_cache_batch(self, cache_completo: Dict[str, List[dict]]):
+        """
+        Sobreescribe TODA la hoja de una sola vez a partir de un dict
+        {symbol: [bars, ...]} ya mergeado en memoria (típicamente:
+        cargar_historico_diario_cache_completo() + actualizar en memoria
+        los símbolos que se refrescaron + llamar acá 1 sola vez al final
+        del ciclo). 1 sola escritura, sin lectura previa — el merge de
+        "no pisar otros símbolos" ya lo garantiza quien arma el dict.
+        """
+        ws = self._hojas.ge
