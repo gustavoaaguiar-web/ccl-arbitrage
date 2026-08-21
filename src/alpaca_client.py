@@ -77,6 +77,53 @@ class AlpacaClient:
             self.get_snapshots([symbol])
         return self._prices.get(symbol, {}).get("last")
 
+    def get_daily_bar_hoy(self, symbols: list) -> Dict[str, dict]:
+        """
+        Trae la vela diaria "de hoy" (todavía en formación, mientras el
+        mercado sigue abierto) para una lista de símbolos, en 1 solo
+        request — reutiliza el endpoint de snapshots, que ya incluye el
+        campo `dailyBar` (no hace falta un request aparte a /stocks/bars).
+
+        Uso: alertas.py arma la serie completa de velas para signal_engine
+        pegando el cache de días cerrados (Historico_Diario_Cache) + esta
+        vela de hoy, sin necesidad de volver a pedir histórico completo
+        en cada ciclo de 5 min.
+
+        Retorna {symbol: {"t": ..., "o": ..., "h": ..., "l": ..., "c": ..., "v": ...}}.
+        Si un símbolo no tiene dailyBar en la respuesta (ej. no operó hoy
+        todavía, o el mercado no abrió), no aparece en el resultado.
+        """
+        try:
+            resp = requests.get(
+                f"{ALPACA_BASE_URL}/stocks/snapshots",
+                headers=self.headers,
+                params={"symbols": ",".join(symbols), "feed": "iex"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            logger.error(f"Error Alpaca daily bar hoy: {e}")
+            return {}
+
+        result = {}
+        for sym, snap in data.items():
+            daily = snap.get("dailyBar")
+            if not daily:
+                continue
+            try:
+                result[sym] = {
+                    "t": daily.get("t", ""),
+                    "o": float(daily.get("o", 0)),
+                    "h": float(daily.get("h", 0)),
+                    "l": float(daily.get("l", 0)),
+                    "c": float(daily.get("c", 0)),
+                    "v": float(daily.get("v", 0)),
+                }
+            except (TypeError, ValueError):
+                continue
+        return result
+
     # ─────────────────────────── BARRAS OHLCV ────────────────────────
 
     def get_bars(
@@ -307,3 +354,4 @@ class AlpacaClient:
         if snaps:
             return {"ok": True, "msg": "Alpaca conectado OK", "sample": snaps}
         return {"ok": False, "msg": "Error conectando a Alpaca. Verificar API keys."}
+        
