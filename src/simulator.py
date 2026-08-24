@@ -12,14 +12,12 @@ Simulador — Sistema GG Swing
 - Sin tope explícito de exposición total (pendiente de revisar más adelante).
 - Apertura: 10:30 hs Argentina. Cierre nuevas compras: 16:30. Cierre forzado: 16:50.
 
-SALIDA ESCALONADA EN 3 TARGETS (reemplaza las 4 condiciones CCL del sistema viejo):
-  T1 alcanzado → cierra 40% de la posición, stop sube a breakeven
-                 (desde acá el peor resultado posible es PnL=0%, nunca pérdida)
-  T2 alcanzado → cierra 40% adicional, queda 20% con trailing
-  Cierre final → 3 variantes:
-                   - trailing stop tocado (sobre el 20% remanente)
-                   - stop loss directo (si nunca llegó a T1)
-                   - máximo hold a 21 días
+SALIDA (3 variantes, todas evaluadas por procesar_ciclo() en cada ciclo,
+persisten entre días — sin cierre forzado por horario, es swing trading
+no day-trading):
+  - trailing stop tocado (sobre el 20% remanente post-T2)
+  - stop loss directo / breakeven (si no llegó a T1, o después de T1)
+  - máximo hold a 21 días
 
 Esta clase NO calcula el trailing stop (HMA16) ni decide si hay señal de
 entrada — eso es responsabilidad de signal_engine.py. Simulator solo
@@ -40,6 +38,15 @@ saber qué período de HMA usar para el trailing stop del 20% remanente
 tras T2 — signal_engine.REGIMENES[regimen]["hma_rapida"] depende de
 saber en qué régimen se generó la señal original. Se agrega el campo,
 threadeado desde signal_engine.Senal.regimen vía abrir_posicion().
+
+FIX (24-ago-2026) — se sacó el cierre forzado por horario (16:50 ART):
+Ese comportamiento era correcto para un sistema day-trading (nunca
+dormir una posición), pero este es un sistema SWING con hold de hasta
+21 días — las posiciones deben persistir de un día para el otro y
+cerrarse únicamente por stop/T1/T2/trailing/máximo hold, nunca por la
+hora del día. debe_cerrar_forzado()/cerrar_todas() quedan disponibles
+como utilidades (ej. cierre manual de emergencia vía app.py) pero ya
+no se invocan automáticamente dentro de procesar_ciclo().
 """
 
 from dataclasses import dataclass, field
@@ -361,17 +368,17 @@ class Simulador:
         relevante para posiciones que ya alcanzaron T2 (remanente 20%).
         """
         trailing_stops = trailing_stops or {}
-        abiertas_evento = []
         cerradas = []
         parciales = []
-        forzadas = []
 
-        # 1. Cierre forzado 16:50
-        if self.debe_cerrar_forzado(ahora):
-            forzadas = self.cerrar_todas(precios, "CIERRE_FORZADO")
-            return {"cerradas": [], "parciales": [], "forzadas": forzadas}
+        # NOTA (24-ago-2026): ya no hay cierre forzado por horario acá —
+        # ver FIX en el docstring del módulo. debe_cerrar_forzado()/
+        # cerrar_todas() siguen disponibles como utilidades (ej. botón de
+        # cierre manual de emergencia en app.py) pero procesar_ciclo() ya
+        # no las invoca automáticamente. Las posiciones persisten entre
+        # días y solo cierran por stop/T1/T2/trailing/máximo hold.
 
-        # 2. Actualizar precios / PnL / pico de cada posición
+        # 1. Actualizar precios / PnL / pico de cada posición
         for sym, pos in self.posiciones.items():
             precio = precios.get(sym, 0)
             if precio <= 0:
@@ -382,14 +389,14 @@ class Simulador:
             if pos.pnl_pct > pos.pnl_max_pct:
                 pos.pnl_max_pct = pos.pnl_pct
 
-        # 3. Evaluar salidas (orden de prioridad: stop > targets > max hold)
+        # 1. Evaluar salidas (orden de prioridad: stop > targets > max hold)
         for symbol in list(self.posiciones.keys()):
             pos = self.posiciones[symbol]
             precio = precios.get(symbol, 0)
             if precio <= 0:
                 continue
 
-            # 3a. Stop loss / breakeven vigente
+            # 1a. Stop loss / breakeven vigente
             if precio <= pos.precio_stop:
                 motivo = "STOP_LOSS" if not pos.stop_en_breakeven else "STOP_BREAKEVEN"
                 op = self._registrar_cierre(pos, pos.cantidad_restante, precio, motivo, "CIERRE_FINAL")
@@ -397,7 +404,7 @@ class Simulador:
                 del self.posiciones[symbol]
                 continue
 
-            # 3b. Trailing stop (solo aplica tras T2, sobre el remanente 20%)
+            # 1b. Trailing stop (solo aplica tras T2, sobre el remanente 20%)
             if pos.t2_alcanzado:
                 trailing = trailing_stops.get(symbol)
                 if trailing is not None and precio <= trailing:
@@ -408,7 +415,7 @@ class Simulador:
                     del self.posiciones[symbol]
                     continue
 
-            # 3c. Target 2 — cierra 40% adicional
+            # 1c. Target 2 — cierra 40% adicional
             if pos.t1_alcanzado and not pos.t2_alcanzado and precio >= pos.precio_t2:
                 cantidad_cerrar = pos.cantidad_inicial * PCT_CIERRE_T2
                 cantidad_cerrar = min(cantidad_cerrar, pos.cantidad_restante)
@@ -421,7 +428,7 @@ class Simulador:
                     del self.posiciones[symbol]
                 continue
 
-            # 3d. Target 1 — cierra 40%, stop sube a breakeven
+            # 1d. Target 1 — cierra 40%, stop sube a breakeven
             if not pos.t1_alcanzado and precio >= pos.precio_t1:
                 cantidad_cerrar = pos.cantidad_inicial * PCT_CIERRE_T1
                 cantidad_cerrar = min(cantidad_cerrar, pos.cantidad_restante)
@@ -434,7 +441,7 @@ class Simulador:
                 pos.stop_en_breakeven = True
                 continue
 
-            # 3e. Máximo hold 21 días
+            # 1e. Máximo hold 21 días
             if pos.dias_en_cartera(ahora if isinstance(ahora, datetime) else None) >= MAX_HOLD_DIAS:
                 op = self._registrar_cierre(
                     pos, pos.cantidad_restante, precio, "MAX_HOLD_21D", "CIERRE_FINAL"
@@ -443,7 +450,7 @@ class Simulador:
                 del self.posiciones[symbol]
                 continue
 
-        return {"cerradas": cerradas, "parciales": parciales, "forzadas": forzadas}
+        return {"cerradas": cerradas, "parciales": parciales}
 
     # ──────────────────── RESUMEN ────────────────────────
 
