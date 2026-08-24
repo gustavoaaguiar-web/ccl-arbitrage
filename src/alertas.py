@@ -145,7 +145,7 @@ def procesar_alertas(
         {
             "entradas": [Posicion, ...],
             "parciales": [Operacion, ...],   # TARGET_1 / TARGET_2
-            "cierres":   [Operacion, ...],   # STOP_LOSS / TRAILING_STOP / MAX_HOLD_21D / CIERRE_FORZADO
+            "cierres":   [Operacion, ...],   # STOP_LOSS / TRAILING_STOP / MAX_HOLD_21D
         }
     """
     # ── Lecturas por lote — 1 vez por ciclo, no por símbolo ──────────
@@ -222,5 +222,5 @@ def procesar_alertas(
     return {
         "entradas": entradas,
         "parciales": resultado_ciclo["parciales"],
-        "cierres": resultado_ciclo["cerradas"] + resultado_ciclo["forzadas"],
+        "cierres": resultado_ciclo["cerradas"],
     }
