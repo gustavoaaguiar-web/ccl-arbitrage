@@ -14,13 +14,24 @@ simulator.py. Responsabilidades:
                       que ya se pide para el precio actual)
   2. Refrescar Historico_Diario_Cache una vez por día (chequea la fecha
      más reciente cacheada antes de volver a pedirle historia a
-     IOL/Alpaca — evita el problema de cuota que tendría pedir histórico
-     completo por símbolo en cada ciclo de 5 min).
+     IOL/Alpaca).
   3. Correr signal_engine.generar_senal() por símbolo, abrir posiciones
-     nuevas vía simulator.abrir_posicion(), evaluar salidas vía
-     simulator.procesar_ciclo(), y devolver los eventos (entradas,
-     parciales T1/T2, cierres) para que trader_job.py dispare los
-     emails correspondientes — SOLO en esos eventos, nunca de más.
+     nuevas vía simulator.abrir_posicion() (priorizando por score si
+     hay varias señales el mismo ciclo y el capital no alcanza para
+     todas), evaluar salidas vía simulator.procesar_ciclo(), y devolver
+     los eventos (entradas, parciales T1/T2, cierres) para que
+     trader_job.py dispare los emails correspondientes.
+
+FIX (21-ago-2026) — 429 Quota exceeded de Sheets API:
+La versión anterior leía Historico_Diario_Cache y Historico_Merval_Raw
+UNA VEZ POR SÍMBOLO (hasta 2-3 lecturas completas × 19 símbolos = 40-70+
+requests de lectura en menos de 1 minuto), superando ampliamente el
+límite gratuito de Sheets API. Se rediseñó para leer cada hoja UNA SOLA
+VEZ POR CICLO (2 lecturas totales: cache completo + raw ticks completos),
+trabajar en memoria, y escribir el cache actualizado en 1 sola escritura
+al final del ciclo (si hubo símbolos refrescados). También se batchea el
+pedido de "vela de hoy" de CEDEARs a Alpaca: antes era 1 request por
+símbolo (11 requests), ahora es 1 solo request para los 11 juntos.
 
 DÍAS DE HISTORIA PARA EL CACHE: se pide DIAS_HISTORIA_CACHE (default 200)
 días corridos hacia atrás, suficiente margen sobre MIN_VELAS_REQUERIDAS=60
@@ -46,83 +57,76 @@ def _hoy_str() -> str:
     return datetime.now(TZ_ARG).strftime("%Y-%m-%d")
 
 
-def _refrescar_cache_si_hace_falta(symbol: str, es_cedear: bool, iol, alpaca, sheets) -> None:
+def _refrescar_cache_en_memoria(
+    cache_completo: Dict[str, List[dict]], iol, alpaca
+) -> bool:
     """
-    Refresca Historico_Diario_Cache para un símbolo SOLO si la fecha más
-    reciente cacheada no es de ayer o antes de hoy (es decir, si ya se
-    refrescó hoy, no vuelve a pedir nada). No incluye la vela de hoy —
-    esa se arma aparte, por fuera de este cache.
-    """
-    fecha_cache = sheets.fecha_mas_reciente_cache(symbol)
-    hoy = _hoy_str()
-    if fecha_cache == hoy:
-        return  # ya refrescado hoy, no hay que hacer nada
+    Recorre el universo y refresca EN MEMORIA (dict cache_completo, ya
+    cargado con 1 sola lectura previa) los símbolos cuya fecha más
+    reciente no sea de hoy. No toca Sheets acá — eso se hace 1 sola vez
+    al final, en guardar_historico_diario_cache_batch(), solo si hizo
+    falta refrescar algo.
 
+    Retorna True si se modificó algo (para saber si hay que escribir).
+    """
+    hoy = _hoy_str()
     desde = (datetime.now(TZ_ARG) - timedelta(days=DIAS_HISTORIA_CACHE)).strftime("%Y-%m-%d")
     ayer = (datetime.now(TZ_ARG) - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    try:
-        if es_cedear:
-            bars = alpaca.get_bars_diarias(symbol, desde=desde, hasta=ayer)
+    hubo_cambios = False
+
+    for symbol in se.MERVAL + se.CEDEARS:
+        es_cedear = symbol in se.CEDEARS
+        bars_actuales = cache_completo.get(symbol, [])
+        fecha_reciente = bars_actuales[-1]["t"][:10] if bars_actuales else None
+
+        if fecha_reciente == hoy:
+            continue  # ya refrescado hoy
+
+        try:
+            if es_cedear:
+                bars = alpaca.get_bars_diarias(symbol, desde=desde, hasta=ayer)
+            else:
+                bars = iol.get_historico_diario(symbol, desde, ayer)
+        except Exception as e:
+            logger.warning(f"Cache {symbol}: error refrescando histórico ({e}) — se sigue con lo que haya en cache")
+            continue
+
+        if bars:
+            cache_completo[symbol] = bars
+            hubo_cambios = True
         else:
-            bars = iol.get_historico_diario(symbol, desde, ayer)
-    except Exception as e:
-        logger.warning(f"Cache {symbol}: error refrescando histórico ({e}) — se sigue con lo que haya en cache")
-        return
+            logger.warning(f"Cache {symbol}: refresco devolvió 0 velas — se sigue con lo que haya en cache")
 
-    if bars:
-        sheets.guardar_historico_diario_cache(symbol, bars)
-    else:
-        logger.warning(f"Cache {symbol}: refresco devolvió 0 velas — se sigue con lo que haya en cache")
+    return hubo_cambios
 
 
-def _vela_hoy_merval(symbol: str, sheets) -> Optional[dict]:
+def _velas_hoy_merval(raw_ticks_todos: List[dict]) -> Dict[str, dict]:
     """
-    Arma la vela de hoy para un símbolo Merval a partir de los ticks ya
-    acumulados en Historico_Merval_Raw en este mismo proceso/día — sin
-    request adicional a IOL.
+    Arma la vela de hoy para TODOS los símbolos Merval a partir de los
+    ticks ya cargados en memoria (1 sola lectura previa de
+    Historico_Merval_Raw completo) — sin requests adicionales.
     """
-    ticks = sheets.cargar_historico_merval_raw(symbol)
     hoy = _hoy_str()
-    ticks_hoy = [t for t in ticks if t["ts"][:10] == hoy]
-    if not ticks_hoy:
-        return None
+    ticks_hoy_por_symbol: Dict[str, List[dict]] = {}
+    for t in raw_ticks_todos:
+        if t["ts"][:10] != hoy:
+            continue
+        ticks_hoy_por_symbol.setdefault(t["symbol"], []).append(t)
 
-    ticks_hoy.sort(key=lambda t: t["ts"])
-    return {
-        "t": hoy,
-        "o": ticks_hoy[0]["apertura"] or ticks_hoy[0]["precio"],
-        "h": max(t["maximo"] or t["precio"] for t in ticks_hoy),
-        "l": min(t["minimo"] or t["precio"] for t in ticks_hoy if (t["minimo"] or t["precio"]) > 0),
-        "c": ticks_hoy[-1]["precio"],
-        "v": ticks_hoy[-1]["volumen_nominal"],  # último snapshot = volumen acumulado del día
-    }
-
-
-def construir_bars(symbol: str, es_cedear: bool, iol, alpaca, sheets) -> List[dict]:
-    """
-    Devuelve la lista de velas diarias lista para signal_engine.generar_senal,
-    combinando cache (días cerrados) + vela de hoy (si ya hay datos del
-    día en curso). Refresca el cache primero si hace falta.
-    """
-    _refrescar_cache_si_hace_falta(symbol, es_cedear, iol, alpaca, sheets)
-    bars = sheets.cargar_historico_diario_cache(symbol)
-
-    hoy = _hoy_str()
-    if bars and bars[-1]["t"][:10] == hoy:
-        # el cache ya incluye hoy (no debería pasar con la lógica actual,
-        # pero por las dudas no duplicamos)
-        return bars
-
-    if es_cedear:
-        vela_hoy = alpaca.get_daily_bar_hoy([symbol]).get(symbol)
-    else:
-        vela_hoy = _vela_hoy_merval(symbol, sheets)
-
-    if vela_hoy:
-        bars = bars + [vela_hoy]
-
-    return bars
+    resultado = {}
+    for symbol, ticks in ticks_hoy_por_symbol.items():
+        ticks.sort(key=lambda t: t["ts"])
+        minimos_validos = [t["minimo"] or t["precio"] for t in ticks if (t["minimo"] or t["precio"]) > 0]
+        resultado[symbol] = {
+            "t": hoy,
+            "o": ticks[0]["apertura"] or ticks[0]["precio"],
+            "h": max(t["maximo"] or t["precio"] for t in ticks),
+            "l": min(minimos_validos) if minimos_validos else ticks[-1]["precio"],
+            "c": ticks[-1]["precio"],
+            "v": ticks[-1]["volumen_nominal"],
+        }
+    return resultado
 
 
 def procesar_alertas(
@@ -144,20 +148,30 @@ def procesar_alertas(
             "cierres":   [Operacion, ...],   # STOP_LOSS / TRAILING_STOP / MAX_HOLD_21D / CIERRE_FORZADO
         }
     """
-    universo = se.MERVAL + se.CEDEARS
+    # ── Lecturas por lote — 1 vez por ciclo, no por símbolo ──────────
+    cache_completo = sheets.cargar_historico_diario_cache_completo()
+    raw_ticks_todos = sheets.cargar_historico_merval_raw()
+
+    hubo_cambios = _refrescar_cache_en_memoria(cache_completo, iol, alpaca)
+    if hubo_cambios:
+        sheets.guardar_historico_diario_cache_batch(cache_completo)
+
+    velas_hoy_merval = _velas_hoy_merval(raw_ticks_todos)
+    velas_hoy_cedear = alpaca.get_daily_bar_hoy(se.CEDEARS)  # 1 solo request para los 11
+
+    # ── Procesamiento por símbolo (todo en memoria, sin más I/O) ─────
     precios: Dict[str, float] = {}
     trailing_stops: Dict[str, float] = {}
     entradas: List[sim.Posicion] = []
-    señales_candidatas: List[tuple] = []  # (senal, es_cedear) — se abren ordenadas por score
+    señales_candidatas: List = []
 
-    for symbol in universo:
+    for symbol in se.MERVAL + se.CEDEARS:
         es_cedear = symbol in se.CEDEARS
 
-        try:
-            bars = construir_bars(symbol, es_cedear, iol, alpaca, sheets)
-        except Exception as e:
-            logger.warning(f"{symbol}: error construyendo velas ({e}) — saltado este ciclo")
-            continue
+        bars = list(cache_completo.get(symbol, []))
+        vela_hoy = velas_hoy_cedear.get(symbol) if es_cedear else velas_hoy_merval.get(symbol)
+        if vela_hoy and (not bars or bars[-1]["t"][:10] != vela_hoy["t"][:10]):
+            bars.append(vela_hoy)
 
         if len(bars) < se.MIN_VELAS_REQUERIDAS:
             logger.warning(f"{symbol}: solo {len(bars)} velas (mín {se.MIN_VELAS_REQUERIDAS}) — saltado")
@@ -174,29 +188,18 @@ def procesar_alertas(
         volumes = [b["v"] for b in bars]
 
         if simulador.tiene_posicion(symbol):
-            # Posición abierta: calcular trailing (HMA rápida del régimen
-            # con el que se abrió) para el remanente post-T2. Se calcula
-            # siempre que haya posición, aunque solo se usa si t2_alcanzado
-            # — es barato (numpy sobre <=260 velas) y así procesar_ciclo()
-            # ya lo tiene disponible sin lógica condicional acá.
             pos = simulador.posiciones[symbol]
             params = se.REGIMENES.get(pos.regimen)
             if params:
                 hma_rap = se.hma(se.np.array(closes), params["hma_rapida"])
                 if len(hma_rap) and not se.np.isnan(hma_rap[-1]):
                     trailing_stops[symbol] = float(hma_rap[-1])
-            continue  # la apertura de nuevas posiciones no aplica a símbolos ya en cartera
+            continue
 
-        # Sin posición: evaluar señal de entrada. No se abre acá todavía —
-        # se junta con las demás señales del ciclo para poder priorizar
-        # por score cuando el capital disponible no alcanza para todas
-        # (ver discusión 19-ago-2026: prioridad por score, no orden fijo).
         senal = se.generar_senal(symbol, highs, lows, closes, volumes, es_cedear, modo_backtest=False)
         if senal.senal_valida:
             señales_candidatas.append(senal)
 
-    # Abrir posiciones en orden de score descendente — si el capital no
-    # alcanza para todas, las de mejor score se sirven primero.
     señales_candidatas.sort(key=lambda s: s.score, reverse=True)
     for senal in señales_candidatas:
         pos = simulador.abrir_posicion(
@@ -207,7 +210,7 @@ def procesar_alertas(
             precio_stop=senal.stop,
             precio_t1=senal.t1,
             precio_t2=senal.t2,
-            precio_t3=senal.t2,  # T3 es el trailing en sí, no un precio fijo — se usa T2 como referencia informativa
+            precio_t3=senal.t2,
             precios=precios,
             ahora=ahora,
         )
@@ -220,5 +223,4 @@ def procesar_alertas(
         "entradas": entradas,
         "parciales": resultado_ciclo["parciales"],
         "cierres": resultado_ciclo["cerradas"] + resultado_ciclo["forzadas"],
-  }
-  
+    }
