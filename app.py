@@ -225,9 +225,9 @@ def main():
     if ahora < HORA_APERTURA:
         st.warning(f"⏳ Mercado abre a las {HORA_APERTURA.strftime('%H:%M')} hs")
     elif ahora >= HORA_CIERRE:
-        st.error("🔴 16:50 hs — Cierre forzado de posiciones activo")
+        st.info("🌙 Mercado cerrado — posiciones abiertas se gestionan al reabrir (sin cierre forzado, es swing trading)")
     elif ahora >= HORA_STOP_COMPRA:
-        st.warning("⚠️ 16:30 hs — Sin nuevas entradas | Solo cierres")
+        st.warning("⚠️ 16:30 hs — Sin nuevas entradas | Solo gestión de posiciones abiertas")
     else:
         st.success(f"🟢 Mercado abierto | {resumen['posiciones_abiertas']} posiciones abiertas")
 
